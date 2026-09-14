@@ -62,8 +62,10 @@ function clamp(x,a,b) {
             totalCrits++;
           }
           function poisonAttempt(chance,special=false) {
+            const numericChance=Number(chance);
+            if(!special && !(numericChance>0)) return false;
             attempts++; totalPoisonAttempts++;
-            const p=special?(1/3):chanceFromResist(chance,resist,'subtract');
+            const p=special?(1/3):chanceFromResist(numericChance,resist,'subtract');
             if(rng()<p) {
               successes++; totalPoisonSuccesses++;
               if(!special) {
