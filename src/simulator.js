@@ -192,7 +192,10 @@ function clamp(x,a,b) {
                                           const ht=start+h*interval;if(ht>duration+1e-9||ht>busyUntil+1e-9)break;
                                           const poisons=[];
 
-                                          const asPoisonChance=(Number(equipment.poisonHit)||0)+(Number(equipment.ailment)||0);
+                                          const asPoisonBaseChance=Number(equipment.poisonHit)||0;
+                    const asPoisonChance=asPoisonBaseChance>0
+                      ? asPoisonBaseChance+(Number(equipment.ailment)||0)
+                      : 0;
                                           if(isSpecial) {
                                             poisons.push({chance:100,special:true});
                                             poisons.push({chance:asPoisonChance,special:false});
