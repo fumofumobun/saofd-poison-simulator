@@ -6,6 +6,7 @@
 <link rel="stylesheet" href="src/style.css">
 </head>
 <body>
+
 <header><div><h1>SAOFD 毒シミュレータ</h1></div><a href="https://github.com/" target="_blank">GitHub-ready</a></header>
 <main>
 <section class="card">
@@ -30,8 +31,8 @@
 
 <section class="card">
 <h2>2. アドバンススキル設定</h2>
-<table id="skills"><thead><tr><th>スキル</th><th>種類</th><th>基礎クールタイム/s</th><th>スキル実効時間/s</th><th>ヒット数</th><th>ヒット間隔/s</th><th class="ranged-col">遠隔攻撃割合/%</th><th>毒属性</th><th>毒化ヒット</th><th>毒化付与確率/%</th></tr></thead>
-<tbody></tbody></table>
+<div class="table-scroll"><table id="skills"><thead><tr><th>スキル</th><th>種類</th><th>基礎クールタイム/s</th><th>スキル実効時間/s</th><th>ヒット数</th><th>ヒット間隔/s</th><th class="ranged-col">遠隔攻撃割合/%</th><th>毒属性</th><th>毒化ヒット</th><th>毒化付与確率/%</th></tr></thead>
+<tbody></tbody></table></div>
 
 <label class="inline">ローテーション <input id="rotation" value="1,2,3" title="Skill番号をカンマ区切り"></label>
 <p class="note">スキル実効時間はスキル開始からクールタイム開始までの時間、ヒット間隔はスキルの平均ヒット間隔、毒化ヒットは毒化の毒属性をもつヒット数です。</p>
@@ -55,7 +56,7 @@
 <h2>4. データテーブル</h2>
 
 <h3>毒化</h3>
-<table class="data-table">
+<div class="table-scroll"><table class="data-table">
 <thead>
 <tr><th>毒化</th><th>付与確率</th><th>ヒット</th></tr>
 </thead>
@@ -69,10 +70,10 @@
 <tr><td>グラビテーションサークル</td><td>50%</td><td>1,2,3,4,5,6,7,8,9,10</td></tr>
 <tr><td>フライングガスト</td><td>60%</td><td>1,2</td></tr>
 </tbody>
-</table>
+</table></div>
 
 <h3>初期毒耐性</h3>
-<table class="data-table">
+<div class="table-scroll"><table class="data-table">
 <thead>
 <tr><th>敵</th><th>初期毒耐性</th></tr>
 </thead>
@@ -84,7 +85,7 @@
 <tr><td>極ドレイク</td><td>40%※1</td></tr>
 <tr><td>コロッサス</td><td>40%※2</td></tr>
 </tbody>
-</table>
+</table></div>
 
 <div class="note">
 <p>※1 獲得耐性と克服率が大きく異なる（未解明）</p>

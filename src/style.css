@@ -4,3 +4,31 @@
 .data-table th,.data-table td{padding:8px 10px;border:1px solid var(--border,#ccc);text-align:left}
 .data-table th{font-weight:700}
 .data-table td:nth-child(2){white-space:nowrap}
+
+
+/* Mobile layout */
+.table-scroll{width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}
+#skills{min-width:980px}
+.data-table{min-width:560px}
+.grid>label{min-width:0}
+.grid input,.grid select{width:100%;min-width:0}
+@media(max-width:800px){
+  header{padding:16px}
+  header h1{font-size:20px}
+  header a{font-size:12px}
+  main{width:100%;margin:12px auto;padding:0 10px}
+  .card{padding:14px;border-radius:10px;overflow:visible}
+  .grid,.metrics{grid-template-columns:1fr}
+  label{font-size:13px}
+  input,select,button{min-height:42px;font-size:16px}
+  .inline{display:flex;width:100%;margin:12px 0 0}
+  .inline input{width:100%;min-width:0}
+  .row{gap:10px}
+  .row button{width:100%}
+  .actions{flex-direction:column;align-items:stretch}
+  .actions button{width:100%}
+  .note{font-size:13px}
+  h2{font-size:17px}
+  h3{font-size:15px}
+  #optimizationResult{white-space:pre-wrap;overflow-wrap:anywhere}
+}
