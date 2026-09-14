@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SAOFD 毒シミュレータ</title>
+<link rel="stylesheet" href="src/style.css">
+</head>
+<body>
+<header><div><h1>SAOFD 毒シミュレータ</h1></div><a href="https://github.com/" target="_blank">GitHub-ready</a></header>
+<main>
+<section class="card">
+<h2>1. シミュレーション設定</h2>
+<div class="grid">
+<label>試行回数 <input id="trials" type="number" value="10000" min="100" step="100"></label>
+<label>戦闘時間/s <input id="duration" type="number" value="600" min="1" step="1"></label>
+<label>初期耐性/% <input id="baseResist" type="number" value="50" min="0" step="1"></label>
+<label>獲得耐性/% <input id="rise" type="number" value="75" step="1"></label>
+<label>克服率/% <input id="fall" type="number" value="10" min="0" step="1"></label>
+<label>毒継続時間/s <input id="ailmentDuration" type="number" value="10" step="0.01"></label>
+<label>ネックレス <select id="equipGroup1Count"><option value="4" selected>エピック</option><option value="3">レジェンダリー</option></select></label>
+<label>発動する特殊効果 <select id="specialEffect"><option value="crit" selected>クリティカル(弱点命中)によるクールダウン短縮</option><option value="combo">70ヒットコンボによる即時クールダウン</option><option value="hpmax">HP最大時クールダウン促進</option></select></label>
+<label id="critRateWrap">クリティカル率(弱点命中率)/% <input id="critRate" type="number" value="76" min="0" max="100" step="0.1"></label>
+<label id="normalHpmWrap">通常攻撃頻度(HPM)/min <input id="normalHpm" type="number" value="390" min="0" step="1"></label>
+<label id="normalRangedRateWrap">通常攻撃：遠隔攻撃割合/% <input id="normalRangedRate" type="number" value="100" min="0" max="100" step="0.1"></label>
+<label id="comboSuccessRateWrap">コンボ成功率/% <input id="comboSuccessRate" type="number" value="100" min="0" max="100" step="0.1"></label>
+<label id="hpMaxUptimeWrap">HP最大維持率/% <input id="hpMaxUptime" type="number" value="100" min="0" max="100" step="0.1"></label>
+</div>
+
+</section>
+
+<section class="card">
+<h2>2. アドバンススキル設定</h2>
+<table id="skills"><thead><tr><th>スキル</th><th>種類</th><th>基礎クールタイム/s</th><th>スキル実効時間/s</th><th>ヒット数</th><th>ヒット間隔/s</th><th class="ranged-col">遠隔攻撃割合/%</th><th>毒属性</th><th>毒化ヒット</th><th>毒化付与確率/%</th></tr></thead>
+<tbody></tbody></table>
+
+<label class="inline">ローテーション <input id="rotation" value="1,2,3" title="Skill番号をカンマ区切り"></label>
+<p class="note">スキル実効時間はスキル開始からクールタイム開始までの時間、ヒット間隔はスキルの平均ヒット間隔、毒化ヒットは毒化の毒属性をもつヒット数です。</p>
+</section>
+
+<section class="card">
+<h2>3. 装備とアドバンススキルローテーションの最適化</h2>
+<p class="note">装備枠の効果とアドバンススキルのローテーションを同時に探索します。目的関数は<strong>毒維持率最大化</strong>です。条件分岐は「毒残り時間」と「毒耐性」を用い、アドバンススキル1〜3または通常攻撃を選択します。</p>
+<div class="grid">
+<label>探索規模 <input id="optDepth" type="number" value="5" min="1" max="10" step="1"></label>
+<label>粗探索試行数/候補 <input id="optTrials" type="number" value="150" min="50" max="250" step="50"></label>
+<label>精密評価上位候補数 <input id="optTopK" type="number" value="10" min="3" max="20" step="1"></label>
+</div>
+<div class="row"><button id="optimize" class="primary">装備＋スキル使用方法を最適化</button></div>
+<pre id="optimizationResult" class="note"></pre>
+</section>
+
+<section class="card actions"><button id="export">結果をCSV保存</button><span id="status"></span></section>
+
+<section class="card">
+<h2>4. データテーブル</h2>
+
+<h3>毒化</h3>
+<table class="data-table">
+<thead>
+<tr><th>毒化</th><th>付与確率</th><th>ヒット</th></tr>
+</thead>
+<tbody>
+<tr><td>幻月</td><td>80%</td><td>3</td></tr>
+<tr><td>オールイン</td><td>50%</td><td>2,4,6,8</td></tr>
+<tr><td>デッドリーピアース</td><td>60%</td><td>1,2</td></tr>
+<tr><td>ディフューズスピン</td><td>60%</td><td>1,4</td></tr>
+<tr><td>ホリゾンタルスクエア</td><td>50%</td><td>1,2,3,4,5</td></tr>
+<tr><td>エレクトリックバレット</td><td>60%</td><td>1</td></tr>
+<tr><td>グラビテーションサークル</td><td>50%</td><td>1,2,3,4,5,6,7,8,9,10</td></tr>
+<tr><td>フライングガスト</td><td>60%</td><td>1,2</td></tr>
+</tbody>
+</table>
+
+<h3>初期毒耐性</h3>
+<table class="data-table">
+<thead>
+<tr><th>敵</th><th>初期毒耐性</th></tr>
+</thead>
+<tbody>
+<tr><td>クラーケン</td><td>40%</td></tr>
+<tr><td>極クラーケン</td><td>50%</td></tr>
+<tr><td>ソードゴーレム</td><td>40%</td></tr>
+<tr><td>ドレイク</td><td>40%</td></tr>
+<tr><td>極ドレイク</td><td>40%※1</td></tr>
+<tr><td>コロッサス</td><td>40%※2</td></tr>
+</tbody>
+</table>
+
+<div class="note">
+<p>※1 獲得耐性と克服率が大きく異なる（未解明）</p>
+<p>※2 フェーズ1~2の間はアドバンススキルヒット時毒付与無効化（毒化など他は付与可能）</p>
+</div>
+</section>
+
+<section class="card"><h2>5. 結果</h2><div id="metrics" class="metrics"></div><div id="equipmentResult" class="note"></div><canvas id="chart" width="900" height="320"></canvas><div id="log"></div></section>
+</main>
+<script src="src/simulator.js"></script><script src="src/app.js"></script>
+</body></html>
