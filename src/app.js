@@ -153,7 +153,7 @@ function esc(v) {
         function renderProbabilityCharts(points){
           const wrap=$('probabilityChartWrap');
           if(!wrap)return;
-          wrap.innerHTML='<div class="chart-title">実行付与確率の時間発展</div>';
+          wrap.innerHTML='<div class="chart-title">実効付与確率の時間発展</div>';
           if(!points||!points.length){wrap.style.display='none';return;}
           const maxTime=Math.max(...points.map(q=>q.time));
           const chartCount=Math.max(1,Math.ceil(maxTime/60));
@@ -162,7 +162,7 @@ function esc(v) {
             const segment=points.filter(q=>q.time>=startT && (q.time<=endT || (i===chartCount-1&&q.time<=endT+1e-9)));
             const block=document.createElement('div');block.className='probability-chart-block';
             const canvas=document.createElement('canvas');canvas.className='probability-chart';canvas.width=900;canvas.height=320;
-            canvas.setAttribute('aria-label',`実行付与確率の時間発展 ${startT}s-${endT}s`);
+            canvas.setAttribute('aria-label',`実効付与確率の時間発展 ${startT}s-${endT}s`);
             block.appendChild(canvas);wrap.appendChild(block);
             drawProbabilityChart(canvas.getContext('2d'),canvas.width,canvas.height,segment,startT,endT);
           }
@@ -369,15 +369,19 @@ async function optimizeJoint(){
     };
     await initWorkers();
 
-      const screenDuration=Math.min(duration,30);
-    const screenTrials=Math.max(1,Math.min(6,Math.ceil(userCoarse/20)));
+    // ---------- Stage 1: fast equipment beam screen ----------
+    // The simulator itself is unchanged.  We only reduce the number of
+    // rotation probes used to rank equipment at this coarse stage.  Three
+    // cyclic full rotations are representative of the 15 fixed candidates;
+    // all 15 rotations are restored for the finalists later.
+    const screenRotations=[[1,2,3],[2,3,1],[3,1,2]];
+    const screenDuration=Math.min(duration,24);
+    const screenTrials=Math.max(1,Math.min(3,Math.ceil(userCoarse/35)));
     const screenSeed=0x13579BDF;
     const screen=[];
     const rotationScores=new Map();
-
-    // ---------- Stage 1: exhaustive Pareto equipment × 15 rotations ----------
-    const screenJobs=all.map((eq,ei)=>({id:ei,msg:{cmd:'screen',id:ei,equipment:eq,duration:screenDuration,trials:screenTrials,seed:screenSeed},fallback:async()=>{let best=null,row=[];for(const rot of rotations){const r=runSimulation({...base,equipment:eq,rotation:rot,policy:null,duration:screenDuration,trials:screenTrials,seed:screenSeed});const x={rotation:rot,score:r.uptime};row.push(x);if(!best||x.score>best.score)best=x;}return {best,row};}}));
-    const screenResults=await parallelStage(screenJobs,'Pareto装備×15ローテーション');
+    const screenJobs=all.map((eq,ei)=>({id:ei,msg:{cmd:'screen',id:ei,equipment:eq,duration:screenDuration,trials:screenTrials,seed:screenSeed,rotationsOverride:screenRotations},fallback:async()=>{let best=null,row=[];for(const rot of screenRotations){const r=runSimulation({...base,equipment:eq,rotation:rot,policy:null,duration:screenDuration,trials:screenTrials,seed:screenSeed});const x={rotation:rot,score:r.uptime};row.push(x);if(!best||x.score>best.score)best=x;}return {best,row};}}));
+    const screenResults=await parallelStage(screenJobs,'Pareto装備×代表3ローテーション');
     for(let ei=0;ei<all.length;ei++){const eq=all[ei],rr=screenResults[ei];rotationScores.set(equipmentKey(eq),rr.row);screen.push({...rr.best,equipment:eq});}
 
     // ---------- Stage 2: exact Pareto frontier selection ----------
@@ -392,24 +396,34 @@ async function optimizeJoint(){
     $('status').textContent=`最適化中… Pareto前線 ${policyPool.length}/${allRaw.length} 装備 → 条件分岐を決定論的スクリーニング`;
     await yieldUI();
 
-    // ---------- Stage 3: deterministic stratified policy screen (no random sampling) ----------
-    // Policy screening is the dominant stage: 484 Pareto equipment states ×
-    // 1536 policies would otherwise create ~744k independent simulations before
-    // the real race even starts.  That is especially hostile to mobile browsers
-    // (one Worker, limited CPU/memory).  Keep the policy set deterministic, but
-    // use a bounded stratified screen; finalists are still re-evaluated in the
-    // later full-precision stages.
+    // ---------- Stage 3: global policy beam + equipment-specific refinement ----------
+    // Key acceleration: policies are largely reusable across equipment.  Search
+    // the full 1536-policy lattice only on a handful of representative
+    // equipment states, form a global beam, then test that small beam on every
+    // Pareto equipment.  This changes only the optimizer's search heuristic;
+    // every simulation used for scoring remains the same simulator.
     const isMobileOpt=/Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent||'');
-    const policyBudget=isMobileOpt
-      ? Math.min(policies.length,96)
-      : Math.min(policies.length,256);
-    const pTrials=isMobileOpt
-      ? 1
-      : Math.max(1,Math.min(3,Math.ceil(userCoarse/40)));
-    const pDuration=Math.min(duration,isMobileOpt?20:30);
+    const pTrials=1;
+    const pDuration=Math.min(duration,isMobileOpt?18:24);
     const policySeed=0x2468ACE1;
-    const policyJobs=policyPool.map((item,ei)=>({id:ei,msg:{cmd:'policyScreen',id:ei,equipment:item.equipment,fallback:item.rotation,duration:pDuration,trials:pTrials,seed:policySeed,policyBudget},fallback:async()=>{const out=[];const stride=Math.max(1,Math.ceil(policies.length/policyBudget));const ids=[];const seen=new Set();for(let i=0;i<policies.length&&ids.length<policyBudget;i+=stride){ids.push(i);seen.add(i);}for(const i of [0,policies.length-1])if(!seen.has(i)&&ids.length<policyBudget){ids.push(i);seen.add(i);}for(const pi of ids){const p=policies[pi],c={...base,equipment:item.equipment,rotation:item.rotation,policy:policyFromSpec(p),duration:pDuration,trials:pTrials,seed:policySeed};out.push({index:pi,score:runSimulation(c).uptime});}out.sort((a,b)=>b.score-a.score);return {top:out.slice(0,64),evaluated:ids.length,total:policies.length};}}));
-    const policyResults=await parallelStage(policyJobs,'全条件分岐方針');
+    const globalPolicyBeam=isMobileOpt?20:32;
+    const repCount=Math.min(policyPool.length,isMobileOpt?3:5);
+    const reps=[];
+    const fixedSorted=policyPool.slice().sort((a,b)=>b.score-a.score);
+    const addRep=e=>{if(e&&!reps.some(x=>equipmentKey(x.equipment)===equipmentKey(e)))reps.push(e);};
+    for(let i=0;i<Math.min(2,fixedSorted.length);i++)addRep(fixedSorted[i]);
+    const far=farthestEquipmentSample(policyPool.map(x=>x.equipment),repCount);
+    for(const e of far){const item=policyPool.find(x=>equipmentKey(x.equipment)===equipmentKey(e));addRep(item);if(reps.length>=repCount)break;}
+    $('status').textContent=`最適化中… ${policyPool.length}装備 → 代表${reps.length}装備で全${policies.length}条件分岐を探索`;
+    await yieldUI();
+    const globalJobs=reps.map((item,ei)=>({id:ei,msg:{cmd:'policyScreen',id:ei,equipment:item.equipment,fallback:item.rotation,duration:pDuration,trials:pTrials,seed:policySeed,exhaustive:true},fallback:async()=>{const out=[];for(let pi=0;pi<policies.length;pi++){const p=policies[pi];out.push({index:pi,score:runSimulation({...base,equipment:item.equipment,rotation:item.rotation,policy:policyFromSpec(p),duration:pDuration,trials:pTrials,seed:policySeed}).uptime});}out.sort((a,b)=>b.score-a.score);return {top:out.slice(0,64),evaluated:policies.length,total:policies.length};}}));
+    const globalResults=await parallelStage(globalJobs,'代表装備×全条件分岐');
+    const globalScores=new Map();
+    for(const res of globalResults)for(const z of (res.top||[])){const old=globalScores.get(z.index);if(!old||z.score>old)globalScores.set(z.index,z.score);}
+    const globalPolicies=[...globalScores.entries()].sort((a,b)=>b[1]-a[1]).slice(0,globalPolicyBeam).map(x=>x[0]);
+
+    const policyJobs=policyPool.map((item,ei)=>({id:ei,msg:{cmd:'policyScreen',id:ei,equipment:item.equipment,fallback:item.rotation,duration:pDuration,trials:pTrials,seed:policySeed,policyIndices:globalPolicies},fallback:async()=>{const out=[];for(const pi of globalPolicies){const p=policies[pi],c={...base,equipment:item.equipment,rotation:item.rotation,policy:policyFromSpec(p),duration:pDuration,trials:pTrials,seed:policySeed};out.push({index:pi,score:runSimulation(c).uptime});}out.sort((a,b)=>b.score-a.score);return {top:out.slice(0,Math.min(16,out.length)),evaluated:globalPolicies.length,total:policies.length};}}));
+    const policyResults=await parallelStage(policyJobs,'全装備×高速方針ビーム');
     const policyLeaders=[];
     for(let ei=0;ei<policyPool.length;ei++){const item=policyPool[ei],res=policyResults[ei];for(const z of res.top){policyLeaders.push({equipment:item.equipment,policy:policies[z.index],policyIndex:z.index,rotation:item.rotation,score:z.score});}}
 

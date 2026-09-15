@@ -108,41 +108,73 @@ async function scoreMany(cfgs,useCache=true){
   for(let k=0;k<misses.length;k++){out[misses[k].i]=rs[k];if(useCache)scoreCache.set(misses[k].key,rs[k]);}
   return out;
 }
+
+function psIndex(v){
+  const D=Math.max(0,Number(shared.base?.ailmentDuration)||0), duration=Math.max(0,Number(shared.base?.duration)||0);
+  const ps=[...new Set([0,0.5,1,2,3,5,7,9,Math.min(D,duration)].map(x=>Math.round(x*1e9)/1e9))];
+  return ps.indexOf(Math.round(Number(v)*1e9)/1e9);
+}
 self.onmessage=async function(ev){const d=ev.data||{};try{
  if(d.cmd==='init'){shared.base=d.base;shared.skills=d.skills;shared.rotations=d.rotations;buildPolicyMeta();shared.compiledRotations=(d.rotations||[]).map(cachedRotation);await ensureWasm();for(const ef of ['crit','combo','hpmax'])wasmSafe[ef]=await verifyWasmForEffect(ef);self.postMessage({cmd:'init-ok',wasmSafe});return;}
- if(d.cmd==='screen'){const eq=d.equipment,base=shared.base,rots=shared.compiledRotations||shared.rotations||[];const cfgs=rots.map(rot=>({...base,equipment:eq,rotation:rot,policy:null,duration:d.duration,trials:d.trials,seed:d.seed}));const rs=await scoreMany(cfgs);if(rs.length!==cfgs.length||rs.some(x=>!x||!Number.isFinite(x.uptime)))throw new Error('screen結果が不正です');let best=null,row=[];for(let i=0;i<rs.length;i++){const x={rotation:rots[i],score:rs[i].uptime};row.push(x);if(!best||x.score>best.score)best=x;}self.postMessage({cmd:'result',id:d.id,result:{best,row}});return;}
+ if(d.cmd==='screen'){const eq=d.equipment,base=shared.base,rots=d.rotationsOverride||shared.compiledRotations||shared.rotations||[];const cfgs=rots.map(rot=>({...base,equipment:eq,rotation:rot,policy:null,duration:d.duration,trials:d.trials,seed:d.seed}));const rs=await scoreMany(cfgs);if(rs.length!==cfgs.length||rs.some(x=>!x||!Number.isFinite(x.uptime)))throw new Error('screen結果が不正です');let best=null,row=[];for(let i=0;i<rs.length;i++){const x={rotation:rots[i],score:rs[i].uptime};row.push(x);if(!best||x.score>best.score)best=x;}self.postMessage({cmd:'result',id:d.id,result:{best,row}});return;}
  if(d.cmd==='policyScreen'){
   const eq=d.equipment,base=shared.base,fallback=cachedRotation(d.fallback),count=shared.policyCount;
-  // Deterministic coarse screening: evaluate a bounded, evenly stratified set of
-  // policy indices. This stage is only a screen; finalists are re-evaluated with
-  // the full-precision race. No random sampling is used.
-  const budget=Math.max(512,Math.min(8192,Number(d.policyBudget)||4096));
-  const top=[];let minIndex=-1,minScore=Infinity;
-  const addTop=(index,score)=>{if(top.length<64){top.push({index,score});if(score<minScore){minScore=score;minIndex=top.length-1;}}else if(score>minScore){top[minIndex]={index,score};minIndex=0;minScore=top[0].score;for(let k=1;k<top.length;k++)if(top[k].score<minScore){minScore=top[k].score;minIndex=k;}}};
-  const seen=new Set(),indices=[];
+  // Two modes:
+  //  1) policyIndices: evaluate an explicit small beam selected globally.
+  //  2) exhaustive: evaluate the complete 1536-policy lattice for a few
+  //     representative equipment states.  This moves the expensive search
+  //     from "every equipment × every policy" to "few representatives × all
+  //     policies", then tests the resulting beam against all equipment.
+  const explicit=Array.isArray(d.policyIndices)?d.policyIndices.filter(i=>Number.isInteger(i)&&i>=0&&i<count):null;
+  let indices=[];
+  const seen=new Set();
   const push=i=>{if(i>=0&&i<count&&!seen.has(i)){seen.add(i);indices.push(i);}};
-  // Always include the first/last policy and boundaries of each metadata block.
-  push(0);push(count-1);
-  // buildPolicyMeta stores the complete flat policy list; it does not expose
-  // block metadata. Keep the screen independent of optional block data so
-  // mobile/desktop workers use the same deterministic policy set.
-  push(0);push(count-1);
-  // Then fill the remaining budget by a deterministic uniform stride.
-  const stride=Math.max(1,Math.ceil(count/Math.max(1,budget-indices.length)));
-  for(let i=0;i<count&&indices.length<budget;i+=stride)push(i);
-  // If the stride left a gap because of duplicate boundary indices, fill from the
-  // tail deterministically.
-  for(let i=count-1;i>=0&&indices.length<budget;i--)push(i);
-  const chunk=128;
-  for(let begin=0;begin<indices.length;begin+=chunk){
-    const ids=indices.slice(begin,begin+chunk),cfgs=ids.map(i=>({...base,equipment:eq,rotation:fallback,policy:policyAt(i),duration:d.duration,trials:d.trials,seed:d.seed}));
-    const rs=await scoreMany(cfgs,false);
-    if(rs.length!==cfgs.length||rs.some(x=>!x||!Number.isFinite(x.uptime)))throw new Error('policyScreen結果が不正です');
-    for(let j=0;j<rs.length;j++)addTop(ids[j],rs[j].uptime);
-    if(((begin/chunk)&7)===0)await Promise.resolve();
+  if(explicit && explicit.length){for(const i of explicit)push(i);}
+  else if(d.exhaustive===true){for(let i=0;i<count;i++)push(i);}
+  else{
+    const budget=Math.max(32,Math.min(count,Number(d.policyBudget)||96));
+    push(0);push(count-1);
+    const anchorBudget=Math.min(budget,Math.max(24,Math.floor(budget*0.58)));
+    const stride=Math.max(1,Math.ceil(count/anchorBudget));
+    for(let i=0;i<count&&indices.length<anchorBudget;i+=stride)push(i);
+    for(let i=count-1;i>=0&&indices.length<anchorBudget;i-=stride)push(i);
+    const refineBudget=Math.min(count,Math.max(0,budget-indices.length));
+    if(refineBudget>0 && indices.length){
+      // Add deterministic one-coordinate neighbours around the best sampled
+      // anchors. This is retained only for legacy callers.
+      const provisional=indices.slice(0,Math.min(8,indices.length));
+      const ranges=[
+        [0,0.5,1,2,3,5,7,9], [1,2,3], [0,1,2,3], [0,1,2,3], [0,1,2,3]
+      ];
+      for(const idx of provisional){
+        const pp=policySpecAt(idx), vals=[pp.poisonThreshold,pp.successStreak,pp.urgent,pp.highSuccess,pp.defaultAction];
+        for(let dim=0;dim<5;dim++)for(const v of ranges[dim]){
+          if(v===vals[dim])continue;
+          const q=vals.slice();q[dim]=v;
+          const ps=shared.base?psIndex(q[0]):-1;
+          if(ps<0)continue;
+          const pi=((((ps*3+(q[1]-1))*4+q[2])*4+q[3])*4+q[4]);
+          push(pi); if(indices.length>=budget)break;
+        }
+        if(indices.length>=budget)break;
+      }
+    }
   }
-  top.sort((a,b)=>b.score-a.score);
-  self.postMessage({cmd:'result',id:d.id,result:{top:top.slice(0,64),evaluated:indices.length,total:count}});return;}
+  const scoreIndices=async(ids)=>{
+    const all=[]; const chunk=128;
+    for(let begin=0;begin<ids.length;begin+=chunk){
+      const part=ids.slice(begin,begin+chunk);
+      const cfgs=part.map(i=>({...base,equipment:eq,rotation:fallback,policy:policyAt(i),duration:d.duration,trials:d.trials,seed:d.seed}));
+      const rs=await scoreMany(cfgs,false);
+      if(rs.length!==cfgs.length||rs.some(x=>!x||!Number.isFinite(x.uptime)))throw new Error('policyScreen結果が不正です');
+      for(let j=0;j<rs.length;j++)all.push({index:part[j],score:rs[j].uptime});
+    }
+    return all;
+  };
+  let out=await scoreIndices(indices);
+  out.sort((a,b)=>b.score-a.score);
+  self.postMessage({cmd:'result',id:d.id,result:{top:out.slice(0,64),evaluated:seen.size,total:count}});return;
+}
  if(d.cmd==='policyExpand'){const eq=d.equipment,base=shared.base,rots=shared.compiledRotations||shared.rotations||[],leaders=d.leaders||[];const jobs=[];for(const leader of leaders){if(leader.index<0||leader.index>=shared.policyCount)throw new Error('policy index out of range');const p=policySpecAt(leader.index);for(const rot of rots)jobs.push({leader,rot,c:{...base,equipment:eq,rotation:rot,policy:policyFromSpec(p),duration:d.duration,trials:d.trials,seed:d.seed}});}const rs=await scoreMany(jobs.map(x=>x.c));if(rs.length!==jobs.length||rs.some(x=>!x||!Number.isFinite(x.uptime)))throw new Error('policyExpand結果が不正です');const bests=[];for(let i=0;i<leaders.length;i++){let best=null;for(let j=0;j<rots.length;j++){const z=jobs[i*rots.length+j],sc=rs[i*rots.length+j].uptime;if(!best||sc>best.score)best={index:z.leader.index,score:sc,rotation:z.rot};}bests.push(best);}self.postMessage({cmd:'result',id:d.id,result:{bests}});return;}
  if(d.cmd==='batchRun'){const list=d.candidates||[];const rs=await scoreMany(list);if(rs.length!==list.length||rs.some(x=>!x||!Number.isFinite(x.uptime)))throw new Error('batchRun結果が不正です');self.postMessage({cmd:'batchResult',id:d.id,results:rs});return;}
  if(d.cmd==='run'){const rs=await scoreMany([d.cfg]);if(!rs[0]||!Number.isFinite(rs[0].uptime))throw new Error('run結果が不正です');self.postMessage({cmd:'result',id:d.id,result:rs[0]});return;}

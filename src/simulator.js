@@ -79,8 +79,9 @@ function clamp(x,a,b) {
         let totalPoisonAttempts=0,totalPoisonSuccesses=0,totalCrits=0,totalNormalHits=0,totalSkillActivations=0,totalRangedHits=0,totalMeleeHits=0,totalMeleeCrits=0,totalRangedCrits=0;
          const collectProbTimeline=cfg.__probTimeline===true && !fastMode;
          const probStep=Math.max(0.1,Number(cfg.__probStep)||0.5);
-         const probSum=collectProbTimeline?new Float64Array(Math.ceil(duration/probStep)+1):null;
-         const probCount=collectProbTimeline?new Uint32Array(Math.ceil(duration/probStep)+1):null;
+         const probBins=collectProbTimeline?Math.ceil(duration/probStep)+1:0;
+         const probSum=collectProbTimeline?new Float64Array(probBins):null;
+         const probCount=collectProbTimeline?new Uint32Array(probBins):null;
         const timeline=[];
         // Reuse per-trial typed arrays instead of allocating three Float64Arrays
         // for every Monte-Carlo trial. This is semantics-preserving and targets
@@ -104,6 +105,34 @@ function clamp(x,a,b) {
           cooldownReduction.fill(0);
           cooldownStart.fill(0);
           let t=0,busyUntil=0,poisonUntil=-Infinity,resist=baseResist,peakRes=resist,u=0,comboHits=0,successStreak=0;
+          let nextProbBin=1;
+          // Timeline definition: E[P_eff(t)] over all Monte-Carlo states, not
+          // only over timestamps at which a poison attempt happened.  Bin 0 is
+          // the pre-event initial state, so it exactly reflects the configured
+          // initial effective application probability.
+          function timelineProbability(r) {
+            return ordinaryPoisonChance>0?chanceFromResist(ordinaryPoisonChance,r,'subtract'):0;
+          }
+          function sampleTimelineBefore(time){
+            if(!collectProbTimeline)return;
+            while(nextProbBin<probBins && nextProbBin*probStep < time-1e-9){
+              const tp=timelineProbability(resist);
+              probSum[nextProbBin]+=tp; probCount[nextProbBin]++;
+              nextProbBin++;
+            }
+          }
+          function sampleTimelineAt(time){
+            if(!collectProbTimeline || time<=1e-9)return;
+            while(nextProbBin<probBins && Math.abs(nextProbBin*probStep-time)<=1e-9){
+              const tp=timelineProbability(resist);
+              probSum[nextProbBin]+=tp; probCount[nextProbBin]++;
+              nextProbBin++;
+            }
+          }
+          if(collectProbTimeline){
+            const p0=timelineProbability(resist);
+            probSum[0]+=p0; probCount[0]++;
+          }
           let hpMaxActive = specialEffect==='hpmax' ? (rng()<hpMaxUptime) : false;
           let lastHpCheck = 0;
           let nextNormal=normalHz>0?0:Infinity;
@@ -140,7 +169,6 @@ function clamp(x,a,b) {
             if(!special && !(numericChance>0)) return false;
             if(!fastMode){attempts++; totalPoisonAttempts++;}
             const p=special?(1/3):chanceFromResist(numericChance,resist,'subtract');
-             if(collectProbTimeline){const bi=Math.max(0,Math.min(probSum.length-1,Math.floor(t/probStep+1e-9)));probSum[bi]+=p;probCount[bi]++;}
             if(rng()<p) {
               if(!fastMode){successes++; totalPoisonSuccesses++;}
               if(!special) {
@@ -228,7 +256,14 @@ function clamp(x,a,b) {
                                   } else nextSkill=busyUntil;
                                   const candidate=Math.min(nextNormal,nextSkill,busyUntil>t?busyUntil:Infinity);
                                   if(candidate>duration+1e-9)break;
+                                  const previousEventTime=t;
                                   t=candidate;
+                                  // Complete the fixed-time sample for the previous
+                                  // event only after all events at that timestamp have
+                                  // finished. This avoids sampling a partially updated
+                                  // resistance when multiple poison hits share a timestamp.
+                                  sampleTimelineAt(previousEventTime);
+                                  sampleTimelineBefore(t);
                                   updateHpMaxState(t);
 
                                   if(nextNormal<=t+1e-9 && nextNormal<=duration+1e-9 && nextNormal<=nextSkill+1e-9) {
@@ -259,18 +294,25 @@ function clamp(x,a,b) {
                                           if(hd.partialFlags && hd.partialFlags[h]!==1){poisonCount=1;p2=0;s2=false;}
 
                                           while(nextNormal<=ht+1e-9&&nextNormal<busyUntil+1e-9&&nextNormal<=duration+1e-9) {
-                                            t=nextNormal;if(!fastMode)totalNormalHits++;processHit(normalRangedRate,0,0,false,0,false);nextNormal+=1/normalHz;
+                                            t=nextNormal;if(!fastMode)totalNormalHits++;processHit(normalRangedRate,0,0,false,0,false);sampleTimelineAt(t);nextNormal+=1/normalHz;
                                           }
-                                          t=ht;processHit(Number(s.rangedRate)||0,poisonCount,p1,s1,p2,s2);
+                                          t=ht;processHit(Number(s.rangedRate)||0,poisonCount,p1,s1,p2,s2);sampleTimelineAt(t);
                                           t=busyUntil;
                                           if(execution<=1e-9)t=busyUntil;
                                         }
+                                        }
+                                        sampleTimelineAt(t);
+                                        if(collectProbTimeline){
+                                          while(nextProbBin<probBins){
+                                            const tp=timelineProbability(resist);
+                                            probSum[nextProbBin]+=tp; probCount[nextProbBin]++; nextProbBin++;
+                                          }
                                         }
                                         uptimeSum+=duration>0?clamp(u/duration,0,1):0;maxRes=Math.max(maxRes,peakRes);
                                         if(!fastMode && n<trialStart+20)timeline.push({trial:n+1,uptime:duration>0?clamp(u/duration,0,1):0});
                                       }
                                       if(fastMode)return {uptime:uptimeSum/trials};
-                                      const executionProbabilityTimeline=collectProbTimeline?Array.from({length:probSum.length},(_,i)=>({time:Math.min(i*probStep,duration),probability:probCount[i]>0?probSum[i]/probCount[i]:null})).filter(q=>q.probability!==null):[];
+                                      const executionProbabilityTimeline=collectProbTimeline?Array.from({length:probBins},(_,i)=>({time:Math.min(i*probStep,duration),probability:probCount[i]>0?probSum[i]/probCount[i]:null})).filter(q=>q.probability!==null):[];
                                       return {uptime:uptimeSum/trials,attempts:attempts/trials,successes:successes/trials,successRate:attempts?successes/attempts:0,maxRes,timeline,hits:totalHits/trials,poisonAttempts:totalPoisonAttempts/trials,poisonSuccesses:totalPoisonSuccesses/trials,crits:critEnabled?totalCrits/trials:0,meleeHits:critEnabled?totalMeleeHits/trials:0,rangedHits:critEnabled?totalRangedHits/trials:0,meleeCrits:critEnabled?totalMeleeCrits/trials:0,rangedCrits:critEnabled?totalRangedCrits/trials:0,normalHits:totalNormalHits/trials,skillActivations:totalSkillActivations/trials,executionProbabilityTimeline};
                                     }
 
