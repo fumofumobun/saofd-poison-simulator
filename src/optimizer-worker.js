@@ -1,5 +1,5 @@
 importScripts('./wasm-sim.js','./simulator.js');
-let shared={base:null,skills:null,policyCount:0,policyMeta:null,rotations:null,compiledRotations:null};
+let shared={base:null,skills:null,skillsFingerprint:'',policyCount:0,policyMeta:null,rotations:null,compiledRotations:null};
 const policyCache=new Map();
 const rotationCache=new Map();
 const scoreCache=new Map();
@@ -24,7 +24,8 @@ function policySpecAt(i){
   return m.specs[i];
 }
 function policyAt(i){return cachedPolicyFromSpec(policySpecAt(i));}
-async function ensureWasm(){return await initWasmBatch();}
+let wasmInitDone=false;
+async function ensureWasm(){if(wasmInitDone)return !!wasmBatchInstance; wasmInitDone=true; return await initWasmBatch();}
 function sameScore(a,b){return Math.abs((a?.uptime??0)-(b?.uptime??0))<1e-12;}
 async function verifyWasmForEffect(effect){
   if(!await ensureWasm()) return false;
@@ -76,7 +77,7 @@ function wasmCompatible(work,effect){
       const a=k==='normalHps'?first.normalHps:first[k], b=k==='normalHps'?c.normalHps:c[k];
       if(Number(a??0)!==Number(b??0))return false;
     }
-    return JSON.stringify(c.skills||[])===JSON.stringify(first.skills||[]);
+    return (c.skillsFingerprint||JSON.stringify(c.skills||[]))===shared.skillsFingerprint;
   });
 }
 async function scoreMany(cfgs,useCache=true){
@@ -90,7 +91,7 @@ async function scoreMany(cfgs,useCache=true){
   }
   if(!misses.length)return out;
   const work=misses.map(x=>x.c);
-  if(work.length && await ensureWasm()){
+  if(work.length && !work[0].policy && await ensureWasm()){
     const effect=work[0].specialEffect||'crit';
     if(wasmSafe[effect] && wasmCompatible(work,effect)){
       try{
@@ -115,7 +116,7 @@ function psIndex(v){
   return ps.indexOf(Math.round(Number(v)*1e9)/1e9);
 }
 self.onmessage=async function(ev){const d=ev.data||{};try{
- if(d.cmd==='init'){shared.base=d.base;shared.skills=d.skills;shared.rotations=d.rotations;buildPolicyMeta();shared.compiledRotations=(d.rotations||[]).map(cachedRotation);await ensureWasm();for(const ef of ['crit','combo','hpmax'])wasmSafe[ef]=await verifyWasmForEffect(ef);self.postMessage({cmd:'init-ok',wasmSafe});return;}
+ if(d.cmd==='init'){shared.base=d.base;shared.skills=d.skills;shared.skillsFingerprint=JSON.stringify(d.skills||[]);shared.rotations=d.rotations;buildPolicyMeta();shared.compiledRotations=(d.rotations||[]).map(cachedRotation);await ensureWasm();for(const ef of ['crit','combo','hpmax'])wasmSafe[ef]=await verifyWasmForEffect(ef);self.postMessage({cmd:'init-ok',wasmSafe});return;}
  if(d.cmd==='screen'){const eq=d.equipment,base=shared.base,rots=d.rotationsOverride||shared.compiledRotations||shared.rotations||[];const cfgs=rots.map(rot=>({...base,equipment:eq,rotation:rot,policy:null,duration:d.duration,trials:d.trials,seed:d.seed}));const rs=await scoreMany(cfgs);if(rs.length!==cfgs.length||rs.some(x=>!x||!Number.isFinite(x.uptime)))throw new Error('screen結果が不正です');let best=null,row=[];for(let i=0;i<rs.length;i++){const x={rotation:rots[i],score:rs[i].uptime};row.push(x);if(!best||x.score>best.score)best=x;}self.postMessage({cmd:'result',id:d.id,result:{best,row}});return;}
  if(d.cmd==='policyScreen'){
   const eq=d.equipment,base=shared.base,fallback=cachedRotation(d.fallback),count=shared.policyCount;
