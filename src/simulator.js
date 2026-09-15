@@ -65,13 +65,17 @@ function clamp(x,a,b) {
         // Compile policy/rotation once per simulation call. The optimizer invokes
         // this function many times; rebuilding these small arrays at every hit
         // was unnecessary interpreter/JIT work and did not change the model.
-        const compiledPolicy = cfg.policy && cfg.policy.rules ? {
+        const compiledPolicy = cfg.policy && cfg.policy.segmentActions ? {
+          segmentActions: Int8Array.from(cfg.policy.segmentActions, x=>Number(x)||0),
+          segmentCount: Math.max(2, Math.floor(Number(cfg.policy.segmentCount)||cfg.policy.segmentActions.length||2)),
+          ailmentDuration: Math.max(0, Number(cfg.policy.ailmentDuration ?? cfg.ailmentDuration ?? 0)||0)
+        } : (cfg.policy && cfg.policy.rules ? {
           poisonThreshold: Number(cfg.policy.rules[0]?.value ?? Infinity),
           urgent: Number(cfg.policy.rules[0]?.action ?? 0),
           successStreak: Number(cfg.policy.rules[1]?.value ?? Infinity),
           highSuccess: Number(cfg.policy.rules[1]?.action ?? 0),
           defaultAction: Number(cfg.policy.defaultAction ?? 0)
-        } : null;
+        } : null);
         const compiledRotation = (cfg.rotation||[]).filter(n=>Number.isInteger(n)&&n>=1&&n<=skillData.length).map(n=>n-1);
         const defaultOrder=new Int8Array(skillData.length);
         for(let di=0;di<skillData.length;di++)defaultOrder[di]=di;
@@ -214,7 +218,14 @@ function clamp(x,a,b) {
                     function policyPick() {
                       if(typeof cfg.policy==='function') return cfg.policy({t,poisonRemaining:Math.max(0,poisonUntil-t),resist,ready:ready.map(x=>x<=t+1e-9),skills});
                       if(compiledPolicy) {
-                        const remaining=poisonUntil-t;
+                        const remaining=Math.max(0,poisonUntil-t);
+                        if(compiledPolicy.segmentActions) {
+                          const D=compiledPolicy.ailmentDuration;
+                          const K=compiledPolicy.segmentCount;
+                          let idx=0;
+                          if(D>0 && remaining>0) idx=Math.min(K-1,Math.floor((remaining/D)*K));
+                          return compiledPolicy.segmentActions[idx] ?? 0;
+                        }
                         if(remaining<=compiledPolicy.poisonThreshold) return compiledPolicy.urgent;
                         if(successStreak>=compiledPolicy.successStreak) return compiledPolicy.highSuccess;
                         return compiledPolicy.defaultAction;

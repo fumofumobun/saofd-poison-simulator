@@ -81,9 +81,10 @@
 
 <section class="card">
 <h2>4. 装備とアドバンススキルローテーションの最適化</h2>
-<p class="note">装備枠の効果とアドバンススキルの使用方法を同時に探索します。目的関数は<strong>毒維持率最大化</strong>です。同一の装備合計値は1候補に統合し、装備合計値は全列挙します。基本ローテーションは全15通りを対称に評価し、条件分岐は「毒残り時間」と「直近の毒付与成功の連続回数」だけを使う1536通りを全探索します。隠し値である毒耐性Rは分岐条件に使用しません。共通乱数と段階的レーシングで計算量を抑えます。</p>
+<p class="note">装備枠の効果とアドバンススキルの使用方法を同時に探索します。目的関数は<strong>毒維持率最大化</strong>です。同一の装備合計値は1候補に統合し、装備合計値は全列挙します。基本ローテーションは全15通りを対称に評価し、条件分岐は「毒残り時間」のみを使い、その残り時間を2～5区間に分割した区分戦略を探索します。各区間では通常攻撃と3種類のアドバンススキルから使用方法を選択します。隠し値である毒耐性Rは分岐条件に使用しません。区間数も2～5の範囲で比較し、共通乱数と段階的レーシングで計算量を抑えます。</p>
 <div class="grid">
 <label>粗探索シミュレーション回数/候補 <input id="optTrials" type="number" value="100" min="20" max="1000" step="10"></label>
+<label>毒残り時間の区間数 <select id="policySegments"><option value="2">2区間</option><option value="3">3区間</option><option value="4" selected>4区間</option><option value="5">5区間</option></select></label>
 <label>最終精密評価候補数 <input id="optTopK" type="number" value="10" min="1" max="10" step="1"></label>
 </div>
 <div class="row"><button id="optimize" class="primary">装備＋スキル使用方法を最適化</button></div>

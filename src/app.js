@@ -82,7 +82,7 @@ function esc(v) {
       function readSkills() {
         return [...document.querySelectorAll('#skills tbody tr')].map(r=>({type:r.querySelector('.skillType').value,ct:+r.querySelector('.ct').value,execution:+r.querySelector('.execution').value,hits:+r.querySelector('.hits').value,interval:+r.querySelector('.interval').value,rangedRate:+r.querySelector('.rangedRate').value,poisonType:r.querySelector('.poisonType').value,partialHits:r.querySelector('.partialHits').value,partialChance:+r.querySelector('.partialChance').value||0}));}
         function readCfg(rotationOverride=null,trialsOverride=null) {
-          return {trials:trialsOverride??+$('trials').value,duration:+$('duration').value,baseResist:+$('baseResist').value,rise:+$('rise').value,fall:+$('fall').value,ailmentDuration:+$('ailmentDuration').value,critRate:$('specialEffect').value==='crit'?+$('critRate').value:0,normalHpm:+$('normalHpm').value,normalRangedRate:$('specialEffect').value==='crit'?+$('normalRangedRate').value:0,comboSuccessRate:$('specialEffect').value==='combo'?+$('comboSuccessRate').value:0,hpMaxUptime:$('specialEffect').value==='hpmax'?+$('hpMaxUptime').value:0,specialEffect:$('specialEffect').value,equipment:optimizedEquipment||defaultEquipment(),seed:1234567,rotation:rotationOverride??$('rotation').value.split(',').map(Number).filter(Number.isFinite),skills:optimizerSkillsCache||readSkills()};
+          return {trials:trialsOverride??+$('trials').value,duration:+$('duration').value,policySegments:+$('policySegments').value||4,baseResist:+$('baseResist').value,rise:+$('rise').value,fall:+$('fall').value,ailmentDuration:+$('ailmentDuration').value,critRate:$('specialEffect').value==='crit'?+$('critRate').value:0,normalHpm:+$('normalHpm').value,normalRangedRate:$('specialEffect').value==='crit'?+$('normalRangedRate').value:0,comboSuccessRate:$('specialEffect').value==='combo'?+$('comboSuccessRate').value:0,hpMaxUptime:$('specialEffect').value==='hpmax'?+$('hpMaxUptime').value:0,specialEffect:$('specialEffect').value,equipment:optimizedEquipment||defaultEquipment(),seed:1234567,rotation:rotationOverride??$('rotation').value.split(',').map(Number).filter(Number.isFinite),skills:optimizerSkillsCache||readSkills()};
         }
         function verifyFastSimulator() {
           if(typeof runSimulationReference!=='function') return {ok:false,message:'参照シミュレータが読み込まれていません。'};
@@ -153,7 +153,7 @@ function esc(v) {
         function renderProbabilityCharts(points){
           const wrap=$('probabilityChartWrap');
           if(!wrap)return;
-          wrap.innerHTML='<div class="chart-title">実効付与確率の時間発展</div>';
+          wrap.innerHTML='<div class="chart-title">実効付与確率期待値の時間発展</div>';
           if(!points||!points.length){wrap.style.display='none';return;}
           const maxTime=Math.max(...points.map(q=>q.time));
           const chartCount=Math.max(1,Math.ceil(maxTime/60));
@@ -162,7 +162,7 @@ function esc(v) {
             const segment=points.filter(q=>q.time>=startT && (q.time<=endT || (i===chartCount-1&&q.time<=endT+1e-9)));
             const block=document.createElement('div');block.className='probability-chart-block';
             const canvas=document.createElement('canvas');canvas.className='probability-chart';canvas.width=900;canvas.height=320;
-            canvas.setAttribute('aria-label',`実効付与確率の時間発展 ${startT}s-${endT}s`);
+            canvas.setAttribute('aria-label',`実効付与確率期待値の時間発展 ${startT}s-${endT}s`);
             block.appendChild(canvas);wrap.appendChild(block);
             drawProbabilityChart(canvas.getContext('2d'),canvas.width,canvas.height,segment,startT,endT);
           }
@@ -193,28 +193,34 @@ function esc(v) {
   return policySpecsAll(Number($('duration').value)||600,skills,base);
 }
 function policyFromSpec(spec) {
-  return {rules:[
-    {type:'poison_le',value:spec.poisonThreshold,action:spec.urgent},
-    {type:'success_streak_ge',value:spec.successStreak,action:spec.highSuccess}
-  ],defaultAction:spec.defaultAction};
+  const actions=Array.isArray(spec.segmentActions)?spec.segmentActions.slice():[];
+  return {segmentActions:actions,segmentCount:spec.segmentCount||actions.length,ailmentDuration:Number(spec.ailmentDuration||$('ailmentDuration')?.value||0)};
 }
 function policyText(p, rotation=[1,2,3]) {
-  return `毒残り時間 ≤ ${p.poisonThreshold}s → ${actionLabel(p.urgent)}\n毒残り時間が上記を超え、直近の毒付与成功連続回数 ≥ ${p.successStreak}回 → ${actionLabel(p.highSuccess)}\nそれ以外 → ${actionLabel(p.defaultAction)}\n※毒耐性Rは分岐条件として使用しません。プレイヤーが観測できる「毒付与成功」の連続回数だけを使用します。\n※指定したスキルがクールタイム中の場合は、代替ローテーション「${rotation.join(' → ')}」の順に、使用可能なスキルを選択します。`;
+  const D=Math.max(0,Number(p.ailmentDuration||$('ailmentDuration')?.value||0));
+  const K=Math.max(2,Number(p.segmentCount)||p.segmentActions?.length||2);
+  const a=p.segmentActions||[];
+  const rows=[];
+  for(let i=0;i<K;i++){
+    const lo=i===0?0:D*(i/K), hi=D*((i+1)/K);
+    rows.push(`毒残り時間 ${lo===0?'0':lo.toFixed(2)}～${hi.toFixed(2)}s → ${actionLabel(a[i]??0)}`);
+  }
+  return rows.join('\n')+`\n※分岐条件はプレイヤーが観測できる「毒残り時間」のみです。\n※指定したスキルがクールタイム中の場合は、代替ローテーション「${rotation.join(' → ')}」の順に、使用可能なスキルを選択します。`;
 }
 function policySpecsAll(duration,skills,simBase={}){
-  // Human-executable policy space. R is deliberately absent.
-  // 8 poison thresholds × 3 success-streak thresholds × 4^3 actions = 1536.
   const D=Math.max(0,Number(simBase.ailmentDuration ?? $('ailmentDuration')?.value)||0);
-  const durationN=Math.max(0,Number(duration)||0), q=v=>Math.round(v*1e9)/1e9;
-  const uniqueP=[...new Set([0,0.5,1,2,3,5,7,Math.min(D,durationN)].map(q))];
+  const K=Math.max(2,Math.min(5,Math.floor(Number(simBase.policySegments ?? $('policySegments')?.value)||4)));
   const specs=[];
-  for(const P of uniqueP) for(let successStreak=1;successStreak<=3;successStreak++)
-    for(let urgent=0;urgent<=3;urgent++) for(let highSuccess=0;highSuccess<=3;highSuccess++)
-      for(let def=0;def<=3;def++) specs.push({poisonThreshold:P,successStreak,urgent,highSuccess,defaultAction:def});
-  policySpecsAll.lastMeta={policyCount:specs.length,pCount:uniqueP.length,streakCount:3};
+  const total=Math.pow(4,K);
+  for(let n=0;n<total;n++){
+    let x=n; const actions=new Array(K);
+    for(let i=0;i<K;i++){actions[i]=x&3;x>>=2;}
+    specs.push({segmentCount:K,segmentActions:actions,ailmentDuration:D});
+  }
+  policySpecsAll.lastMeta={policyCount:specs.length,segmentCount:K,actionCount:4};
   return specs;
 }
-function policyKey(p){return [p.poisonThreshold,p.successStreak,p.urgent,p.highSuccess,p.defaultAction].join('|');}
+function policyKey(p){return Array.isArray(p.segmentActions)?`K${p.segmentCount}|${p.segmentActions.join(',')}`:[p.poisonThreshold,p.successStreak,p.urgent,p.highSuccess,p.defaultAction].join('|');}
 const optimizerPolicyCache=new Map();
 function policyFromSpecCached(spec) {
   const k=policyKey(spec), hit=optimizerPolicyCache.get(k); if(hit)return hit;
@@ -298,7 +304,7 @@ function farthestEquipmentSample(all,n){
   return selected.slice(0,n);
 }
 function piSeed(rotationIndex,policy){
-  return 1000003*rotationIndex + 97*policy.urgent + 193*policy.highSuccess + 389*policy.defaultAction + Math.floor(policy.poisonThreshold*10)*997 + Math.floor(policy.successStreak)*1009;
+  if(Array.isArray(policy.segmentActions)) return 1000003*rotationIndex + 997*policy.segmentCount + policy.segmentActions.reduce((s,a,i)=>s+(i+1)*97*(Number(a)||0),0); return 1000003*rotationIndex + 97*policy.urgent + 193*policy.highSuccess + 389*policy.defaultAction + Math.floor(policy.poisonThreshold*10)*997 + Math.floor(policy.successStreak)*1009;
 }
 async function optimizeJoint(){
   const skills=readSkills();
@@ -319,7 +325,7 @@ async function optimizeJoint(){
   //  3) All 15 fixed fallback rotations are treated symmetrically.
   //  4) Every racing stage uses common random numbers: candidate identity never
   //     changes the seed. This makes small trial budgets much more informative.
-  //  5) Conditional policies are exhaustively generated from player-observable states; hidden resistance R is never a policy input.
+  //  5) Conditional policies use only player-observable poison remaining time, partitioned into 2-5 equal intervals.
   //  6) Candidates are retained by an uncertainty-aware margin, not by one noisy
   //     rank only. Several candidates per equipment survive into the final race.
   //  7) Final Top-N is collapsed by the four aggregate equipment totals.
@@ -427,7 +433,7 @@ async function optimizeJoint(){
     const policyLeaders=[];
     for(let ei=0;ei<policyPool.length;ei++){const item=policyPool[ei],res=policyResults[ei];for(const z of res.top){policyLeaders.push({equipment:item.equipment,policy:policies[z.index],policyIndex:z.index,rotation:item.rotation,score:z.score});}}
 
-    // ---------- Stage 4: policy × ALL 15 rotations ----------
+    // ---------- Stage 4: time-segment policy × ALL 15 rotations ----------
     const expanded=[];
     const expandTrials=Math.max(1,Math.min(5,Math.ceil(userCoarse/20)));
     const expandDuration=Math.min(duration,45);
@@ -696,7 +702,7 @@ async function optimizeJoint(){
     // Also render the full ranking in the Results section, not only in the
     // optimization-control section. This keeps candidates 2..Top-K visible.
     const rankHtml=ranking.map((x,i)=>{
-      const pol=x.policy?`条件分岐: 毒残り時間≤${x.policy.poisonThreshold}s / 成功連続≥${x.policy.successStreak}回 → [${actionLabel(x.policy.urgent)}, ${actionLabel(x.policy.highSuccess)}, ${actionLabel(x.policy.defaultAction)}] / 代替ローテーション ${x.rotation.join(' → ')}`:`固定ローテーション ${x.rotation.join(' → ')}`;
+      const pol=x.policy?`条件分岐: 毒残り時間を${x.policy.segmentCount}分割 → [${x.policy.segmentActions.map(actionLabel).join(', ')}] / 代替ローテーション ${x.rotation.join(' → ')}`:`固定ローテーション ${x.rotation.join(' → ')}`;
       return `<div class="rank-row"><strong>${i+1}位</strong>　毒維持率 ${(x.score*100).toFixed(3)}%　毒+${x.equipment.poisonHit.toFixed(1)}%　状態異常+${x.equipment.ailment.toFixed(1)}%　CT促進+${x.equipment.ctPromo.toFixed(1)}%　即時CT+${x.equipment.instant.toFixed(1)}%<br><span>${pol}</span></div>`;
     }).join('');
     $('optimizationRanking').innerHTML=`<h3>異なる装備合計値の上位${ranking.length}候補</h3>${rankHtml}`;

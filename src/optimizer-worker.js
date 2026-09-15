@@ -5,18 +5,18 @@ const rotationCache=new Map();
 const scoreCache=new Map();
 const wasmSafe={crit:false,combo:false,hpmax:false};
 function cachedPolicyFromSpec(p){
-  const k=[p.poisonThreshold,p.successStreak,p.urgent,p.highSuccess,p.defaultAction].join('|');
+  const k=Array.isArray(p.segmentActions)?`K${p.segmentCount}|${p.segmentActions.join(',')}`:[p.poisonThreshold,p.successStreak,p.urgent,p.highSuccess,p.defaultAction].join('|');
   let v=policyCache.get(k); if(v)return v;
-  v={rules:[{type:'poison_le',value:p.poisonThreshold,action:p.urgent},{type:'success_streak_ge',value:p.successStreak,action:p.highSuccess}],defaultAction:p.defaultAction};
+  v=Array.isArray(p.segmentActions)
+    ? {segmentActions:p.segmentActions,segmentCount:p.segmentCount,ailmentDuration:p.ailmentDuration}
+    : {rules:[{type:'poison_le',value:p.poisonThreshold,action:p.urgent},{type:'success_streak_ge',value:p.successStreak,action:p.highSuccess}],defaultAction:p.defaultAction};
   if(policyCache.size>=4096)policyCache.delete(policyCache.keys().next().value); policyCache.set(k,v); return v;
 }
 function buildPolicyMeta(){
-  const base=shared.base||{}, D=Math.max(0,Number(base.ailmentDuration)||0), duration=Math.max(0,Number(base.duration)||0), q=v=>Math.round(v*1e9)/1e9;
-  const ps=[...new Set([0,0.5,1,2,3,5,7,9,Math.min(D,duration)].map(q))];
-  const specs=[];
-  for(const P of ps) for(let successStreak=1;successStreak<=3;successStreak++)
-    for(let urgent=0;urgent<=3;urgent++) for(let highSuccess=0;highSuccess<=3;highSuccess++)
-      for(let def=0;def<=3;def++) specs.push({poisonThreshold:P,successStreak,urgent,highSuccess,defaultAction:def});
+  const base=shared.base||{}, D=Math.max(0,Number(base.ailmentDuration)||0);
+  const K=Math.max(2,Math.min(5,Math.floor(Number(base.policySegments)||4)));
+  const specs=[]; const total=Math.pow(4,K);
+  for(let n=0;n<total;n++){let x=n;const actions=new Array(K);for(let i=0;i<K;i++){actions[i]=x&3;x>>=2;}specs.push({segmentCount:K,segmentActions:actions,ailmentDuration:D});}
   shared.policyMeta={specs}; shared.policyCount=specs.length;
 }
 function policySpecAt(i){
