@@ -389,10 +389,22 @@ async function optimizeJoint(){
     await yieldUI();
 
     // ---------- Stage 3: deterministic stratified policy screen (no random sampling) ----------
-    const pTrials=Math.max(1,Math.min(4,Math.ceil(userCoarse/25)));
-    const pDuration=Math.min(duration,30);
+    // Policy screening is the dominant stage: 484 Pareto equipment states ×
+    // 1536 policies would otherwise create ~744k independent simulations before
+    // the real race even starts.  That is especially hostile to mobile browsers
+    // (one Worker, limited CPU/memory).  Keep the policy set deterministic, but
+    // use a bounded stratified screen; finalists are still re-evaluated in the
+    // later full-precision stages.
+    const isMobileOpt=/Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent||'');
+    const policyBudget=isMobileOpt
+      ? Math.min(policies.length,96)
+      : Math.min(policies.length,256);
+    const pTrials=isMobileOpt
+      ? 1
+      : Math.max(1,Math.min(3,Math.ceil(userCoarse/40)));
+    const pDuration=Math.min(duration,isMobileOpt?20:30);
     const policySeed=0x2468ACE1;
-    const policyJobs=policyPool.map((item,ei)=>({id:ei,msg:{cmd:'policyScreen',id:ei,equipment:item.equipment,fallback:item.rotation,duration:pDuration,trials:pTrials,seed:policySeed,policyBudget:policies.length},fallback:async()=>{const out=[];for(let pi=0;pi<policies.length;pi++){const p=policies[pi],c={...base,equipment:item.equipment,rotation:item.rotation,policy:policyFromSpec(p),duration:pDuration,trials:pTrials,seed:policySeed};out.push({index:pi,score:runSimulation(c).uptime});}out.sort((a,b)=>b.score-a.score);return {top:out.slice(0,64)};}}));
+    const policyJobs=policyPool.map((item,ei)=>({id:ei,msg:{cmd:'policyScreen',id:ei,equipment:item.equipment,fallback:item.rotation,duration:pDuration,trials:pTrials,seed:policySeed,policyBudget},fallback:async()=>{const out=[];const stride=Math.max(1,Math.ceil(policies.length/policyBudget));const ids=[];const seen=new Set();for(let i=0;i<policies.length&&ids.length<policyBudget;i+=stride){ids.push(i);seen.add(i);}for(const i of [0,policies.length-1])if(!seen.has(i)&&ids.length<policyBudget){ids.push(i);seen.add(i);}for(const pi of ids){const p=policies[pi],c={...base,equipment:item.equipment,rotation:item.rotation,policy:policyFromSpec(p),duration:pDuration,trials:pTrials,seed:policySeed};out.push({index:pi,score:runSimulation(c).uptime});}out.sort((a,b)=>b.score-a.score);return {top:out.slice(0,64),evaluated:ids.length,total:policies.length};}}));
     const policyResults=await parallelStage(policyJobs,'全条件分岐方針');
     const policyLeaders=[];
     for(let ei=0;ei<policyPool.length;ei++){const item=policyPool[ei],res=policyResults[ei];for(const z of res.top){policyLeaders.push({equipment:item.equipment,policy:policies[z.index],policyIndex:z.index,rotation:item.rotation,score:z.score});}}
