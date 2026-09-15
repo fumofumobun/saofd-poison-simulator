@@ -10,50 +10,7 @@
 <header><div><h1>SAOFD 毒シミュレータ</h1></div><a href="https://github.com/" target="_blank">GitHub-ready</a></header>
 <main>
 <section class="card">
-<h2>1. シミュレーション設定</h2>
-<div class="grid">
-<label>試行回数 <input id="trials" type="number" value="10000" min="100" step="100"></label>
-<label>戦闘時間/s <input id="duration" type="number" value="600" min="1" step="1"></label>
-<label>初期耐性/% <input id="baseResist" type="number" value="50" min="0" step="1"></label>
-<label>獲得耐性/% <input id="rise" type="number" value="75" step="1"></label>
-<label>克服率/% <input id="fall" type="number" value="10" min="0" step="1"></label>
-<label>毒継続時間/s <input id="ailmentDuration" type="number" value="10" step="0.01"></label>
-<label>ネックレス <select id="equipGroup1Count"><option value="4" selected>エピック</option><option value="3">レジェンダリー</option></select></label>
-<label>発動する特殊効果 <select id="specialEffect"><option value="crit" selected>クリティカル(弱点命中)によるクールダウン短縮</option><option value="combo">70ヒットコンボによる即時クールダウン</option><option value="hpmax">HP最大時クールダウン促進</option></select></label>
-<label id="critRateWrap">クリティカル率(弱点命中率)/% <input id="critRate" type="number" value="76" min="0" max="100" step="0.1"></label>
-<label id="normalHpmWrap">通常攻撃頻度(HPM)/min <input id="normalHpm" type="number" value="390" min="0" step="1"></label>
-<label id="normalRangedRateWrap">通常攻撃：遠隔攻撃割合/% <input id="normalRangedRate" type="number" value="100" min="0" max="100" step="0.1"></label>
-<label id="comboSuccessRateWrap">コンボ成功率/% <input id="comboSuccessRate" type="number" value="100" min="0" max="100" step="0.1"></label>
-<label id="hpMaxUptimeWrap">HP最大維持率/% <input id="hpMaxUptime" type="number" value="100" min="0" max="100" step="0.1"></label>
-</div>
-
-</section>
-
-<section class="card">
-<h2>2. アドバンススキル設定</h2>
-<div class="table-scroll"><table id="skills"><thead><tr><th>スキル</th><th>種類</th><th>基礎クールタイム/s</th><th>スキル実効時間/s</th><th>ヒット数</th><th>ヒット間隔/s</th><th class="ranged-col">遠隔攻撃割合/%</th><th>毒属性</th><th>毒化ヒット</th><th>毒化付与確率/%</th></tr></thead>
-<tbody></tbody></table></div>
-
-<label class="inline">ローテーション <input id="rotation" value="1,2,3" title="Skill番号をカンマ区切り"></label>
-<p class="note">スキル実効時間はスキル開始からクールタイム開始までの時間、ヒット間隔はスキルの平均ヒット間隔、毒化ヒットは毒化の毒属性をもつヒット数です。</p>
-</section>
-
-<section class="card">
-<h2>3. 装備とアドバンススキルローテーションの最適化</h2>
-<p class="note">装備枠の効果とアドバンススキルの使用方法を同時に探索します。目的関数は<strong>毒維持率最大化</strong>です。同一の装備合計値は1候補に統合し、装備合計値は全列挙します。基本ローテーションは全15通りを対称に評価し、条件分岐は2880通りを全探索します。共通乱数と段階的レーシングで計算量を抑えます。</p>
-<div class="grid">
-<label>条件分岐候補プール規模（装備は全列挙） <input id="optDepth" type="number" value="200" min="1" max="1340" step="1"></label>
-<label>粗探索試行数/候補 <input id="optTrials" type="number" value="50" min="1" max="1000" step="10"></label>
-<label>精密評価上位候補数 <input id="optTopK" type="number" value="10" min="1" max="10" step="1"></label>
-</div>
-<div class="row"><button id="optimize" class="primary">装備＋スキル使用方法を最適化</button></div>
-<pre id="optimizationResult" class="note"></pre>
-</section>
-
-<section class="card actions"><span id="status">シミュレーション待機中</span></section>
-
-<section class="card">
-<h2>4. データテーブル</h2>
+<h2>1. データテーブル</h2>
 
 <h3>毒化</h3>
 <div class="table-scroll"><table class="data-table">
@@ -93,7 +50,50 @@
 </div>
 </section>
 
-<section class="card"><h2>5. 結果</h2><div id="metrics" class="metrics"></div><div id="equipmentResult" class="note"></div><div id="optimizationRanking" class="note"></div><canvas id="chart" width="900" height="320"></canvas><div id="log"></div></section>
+<section class="card">
+<h2>2. シミュレーション設定</h2>
+<div class="grid">
+<label>試行回数 <input id="trials" type="number" value="10000" min="100" step="100"></label>
+<label>戦闘時間/s <input id="duration" type="number" value="600" min="1" step="1"></label>
+<label>初期耐性/% <input id="baseResist" type="number" value="50" min="0" step="1"></label>
+<label>獲得耐性/% <input id="rise" type="number" value="75" step="1"></label>
+<label>克服率/% <input id="fall" type="number" value="10" min="0" step="1"></label>
+<label>毒継続時間/s <input id="ailmentDuration" type="number" value="10" step="0.01"></label>
+<label>ネックレス <select id="equipGroup1Count"><option value="4" selected>エピック</option><option value="3">レジェンダリー</option></select></label>
+<label>発動する特殊効果 <select id="specialEffect"><option value="crit" selected>クリティカル(弱点命中)によるクールダウン短縮</option><option value="combo">70ヒットコンボによる即時クールダウン</option><option value="hpmax">HP最大時クールダウン促進</option></select></label>
+<label id="critRateWrap">クリティカル率(弱点命中率)/% <input id="critRate" type="number" value="76" min="0" max="100" step="0.1"></label>
+<label id="normalHpmWrap">通常攻撃頻度(HPM)/min <input id="normalHpm" type="number" value="390" min="0" step="1"></label>
+<label id="normalRangedRateWrap">通常攻撃：遠隔攻撃割合/% <input id="normalRangedRate" type="number" value="100" min="0" max="100" step="0.1"></label>
+<label id="comboSuccessRateWrap">コンボ成功率/% <input id="comboSuccessRate" type="number" value="100" min="0" max="100" step="0.1"></label>
+<label id="hpMaxUptimeWrap">HP最大維持率/% <input id="hpMaxUptime" type="number" value="100" min="0" max="100" step="0.1"></label>
+</div>
+
+</section>
+
+<section class="card">
+<h2>3. アドバンススキル設定</h2>
+<div class="table-scroll"><table id="skills"><thead><tr><th>スキル</th><th>種類</th><th>基礎クールタイム/s</th><th>スキル実効時間/s</th><th>ヒット数</th><th>ヒット間隔/s</th><th class="ranged-col">遠隔攻撃割合/%</th><th>毒属性</th><th>毒化ヒット</th><th>毒化付与確率/%</th></tr></thead>
+<tbody></tbody></table></div>
+
+<label class="inline">ローテーション <input id="rotation" value="1,2,3" title="Skill番号をカンマ区切り"></label>
+<p class="note">スキル実効時間はスキル開始からクールタイム開始までの時間、ヒット間隔はスキルの平均ヒット間隔、毒化ヒットは毒化の毒属性をもつヒット数です。</p>
+</section>
+
+<section class="card">
+<h2>4. 装備とアドバンススキルローテーションの最適化</h2>
+<p class="note">装備枠の効果とアドバンススキルの使用方法を同時に探索します。目的関数は<strong>毒維持率最大化</strong>です。同一の装備合計値は1候補に統合し、装備合計値は全列挙します。基本ローテーションは全15通りを対称に評価し、条件分岐は「毒残り時間」と「直近の毒付与成功の連続回数」だけを使う1536通りを全探索します。隠し値である毒耐性Rは分岐条件に使用しません。共通乱数と段階的レーシングで計算量を抑えます。</p>
+<div class="grid">
+<label>粗探索シミュレーション回数/候補 <input id="optTrials" type="number" value="100" min="20" max="1000" step="10"></label>
+<label>最終精密評価候補数 <input id="optTopK" type="number" value="10" min="1" max="10" step="1"></label>
+</div>
+<div class="row"><button id="optimize" class="primary">装備＋スキル使用方法を最適化</button></div>
+</section>
+
+<section class="card actions"><span id="status">シミュレーション待機中</span></section>
+
+
+
+<section class="card"><h2>5. 結果</h2><div id="metrics" class="metrics"></div><div id="equipmentResult" class="note"></div><pre id="optimizationResult" class="note"></pre><div id="optimizationRanking" class="note"></div><div id="probabilityChartWrap" style="display:none"></div><div id="log"></div></section>
 </main>
 <script src="src/simulator.js"></script><script src="src/simulator-reference.js"></script><script src="src/app.js"></script>
 </body></html>

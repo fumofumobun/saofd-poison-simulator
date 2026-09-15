@@ -32,3 +32,10 @@
   h3{font-size:15px}
   #optimizationResult{white-space:pre-wrap;overflow-wrap:anywhere}
 }
+
+.chart-title{font-weight:700;margin:18px 0 6px;}
+#probabilityChart{width:100%;height:auto;display:block;}
+.probability-chart-block{margin-bottom:18px;}
+.probability-chart{width:100%;height:auto;display:block;}
+
+#equipmentResult{white-space:pre-wrap;overflow-wrap:anywhere}

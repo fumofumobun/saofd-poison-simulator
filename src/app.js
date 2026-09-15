@@ -90,8 +90,8 @@ function esc(v) {
           base.duration=Math.min(25,Math.max(1,Number(base.duration)||25));
           const cases=[
             {...base,specialEffect:'crit',critRate:76,normalRangedRate:100,policy:null,rotation:[1,2,3]},
-            {...base,specialEffect:'crit',critRate:63,normalRangedRate:70,policy:policyFromSpec({poisonThreshold:1,resistThreshold:50,urgent:1,highResist:2,defaultAction:0}),rotation:[3,1,2]},
-            {...base,specialEffect:'combo',critRate:0,normalRangedRate:0,comboSuccessRate:83,policy:policyFromSpec({poisonThreshold:3,resistThreshold:75,urgent:3,highResist:1,defaultAction:0}),rotation:[2,3,1]},
+            {...base,specialEffect:'crit',critRate:63,normalRangedRate:70,policy:policyFromSpec({poisonThreshold:1,successStreak:2,urgent:1,highSuccess:2,defaultAction:0}),rotation:[3,1,2]},
+            {...base,specialEffect:'combo',critRate:0,normalRangedRate:0,comboSuccessRate:83,policy:policyFromSpec({poisonThreshold:3,successStreak:2,urgent:3,highSuccess:1,defaultAction:0}),rotation:[2,3,1]},
             {...base,specialEffect:'hpmax',critRate:0,normalRangedRate:0,hpMaxUptime:61,policy:null,rotation:[1,3,2]}
           ];
           const keys=['uptime','attempts','successes','successRate','maxRes','hits','poisonAttempts','poisonSuccesses','crits','meleeHits','rangedHits','meleeCrits','rangedCrits','normalHits','skillActivations'];
@@ -107,7 +107,7 @@ function esc(v) {
           const base=readCfg([1,2,3],9);
           const cases=[
             {...base,specialEffect:'crit',critRate:76,normalRangedRate:100,policy:null,rotation:[1,2,3],seed:0x12345678},
-            {...base,specialEffect:'crit',critRate:63,normalRangedRate:70,policy:policyFromSpec({poisonThreshold:1,resistThreshold:50,urgent:1,highResist:2,defaultAction:0}),rotation:[3,1,2],seed:0x23456789},
+            {...base,specialEffect:'crit',critRate:63,normalRangedRate:70,policy:policyFromSpec({poisonThreshold:1,successStreak:2,urgent:1,highSuccess:2,defaultAction:0}),rotation:[3,1,2],seed:0x23456789},
             {...base,specialEffect:'crit',critRate:35,normalRangedRate:0,policy:null,rotation:[2,3,1],seed:0x3456789a,trialStart:7},
             {...base,specialEffect:'crit',critRate:95,normalRangedRate:100,policy:null,rotation:[3,2,1],seed:0x456789ab,duration:37,trials:13}
           ];
@@ -115,9 +115,63 @@ function esc(v) {
           return {ok:true,message:'Optimizer高速シミュレータは参照シミュレータと完全一致'};
         }
 
+        function drawProbabilityChart(ctx,w,h,points,startT,endT){
+          const padL=58,padR=22,padT=20,padB=42;
+          ctx.clearRect(0,0,w,h);
+          ctx.strokeStyle='#cbd5e1';ctx.lineWidth=1;
+          ctx.beginPath();ctx.moveTo(padL,padT);ctx.lineTo(padL,h-padB);ctx.lineTo(w-padR,h-padB);ctx.stroke();
+          const values=points.map(q=>q.probability).filter(Number.isFinite);
+          const maxP=values.length?Math.max(...values):0;
+          const yMax=maxP>0?maxP:1;
+          ctx.fillStyle='#475569';ctx.font='12px system-ui';ctx.textAlign='center';
+          for(let i=0;i<=4;i++){
+            const y=padT+(h-padT-padB)*(1-i/4);
+            ctx.strokeStyle='#e5e7eb';ctx.beginPath();ctx.moveTo(padL,y);ctx.lineTo(w-padR,y);ctx.stroke();
+            ctx.fillStyle='#475569';ctx.textAlign='right';ctx.fillText(`${(yMax*i/4*100).toFixed(1)}%`,padL-7,y+4);
+          }
+          const span=Math.max(1e-9,endT-startT);
+          for(let i=0;i<=6;i++){
+            const t=startT+span*i/6;
+            const x=padL+(w-padL-padR)*i/6;
+            ctx.strokeStyle='#f1f5f9';ctx.beginPath();ctx.moveTo(x,padT);ctx.lineTo(x,h-padB);ctx.stroke();
+            ctx.fillStyle='#475569';ctx.textAlign='center';ctx.fillText(`${t.toFixed(t<10?1:0)}s`,x,h-padB+20);
+          }
+          ctx.textAlign='center';ctx.fillText('戦闘時間',(padL+w-padR)/2,h-7);
+          ctx.save();ctx.translate(15,(padT+h-padB)/2);ctx.rotate(-Math.PI/2);ctx.fillText('実行付与確率',0,0);ctx.restore();
+          if(!points.length)return;
+          const sx=t=>padL+((t-startT)/span)*(w-padL-padR), sy=p=>padT+(1-Math.max(0,Math.min(yMax,p))/yMax)*(h-padT-padB);
+          ctx.strokeStyle='#334155';ctx.lineWidth=2;ctx.beginPath();
+          let started=false;
+          for(const q of points){
+            if(!Number.isFinite(q.probability))continue;
+            if(!started){ctx.moveTo(sx(q.time),sy(q.probability));started=true;}else ctx.lineTo(sx(q.time),sy(q.probability));
+          }
+          if(started)ctx.stroke();
+          ctx.fillStyle='#334155';for(const q of points){if(!Number.isFinite(q.probability))continue;ctx.beginPath();ctx.arc(sx(q.time),sy(q.probability),3.5,0,Math.PI*2);ctx.fill();}
+        }
+
+        function renderProbabilityCharts(points){
+          const wrap=$('probabilityChartWrap');
+          if(!wrap)return;
+          wrap.innerHTML='<div class="chart-title">実行付与確率の時間発展</div>';
+          if(!points||!points.length){wrap.style.display='none';return;}
+          const maxTime=Math.max(...points.map(q=>q.time));
+          const chartCount=Math.max(1,Math.ceil(maxTime/60));
+          for(let i=0;i<chartCount;i++){
+            const startT=i*60,endT=Math.min((i+1)*60,maxTime);
+            const segment=points.filter(q=>q.time>=startT && (q.time<=endT || (i===chartCount-1&&q.time<=endT+1e-9)));
+            const block=document.createElement('div');block.className='probability-chart-block';
+            const canvas=document.createElement('canvas');canvas.className='probability-chart';canvas.width=900;canvas.height=320;
+            canvas.setAttribute('aria-label',`実行付与確率の時間発展 ${startT}s-${endT}s`);
+            block.appendChild(canvas);wrap.appendChild(block);
+            drawProbabilityChart(canvas.getContext('2d'),canvas.width,canvas.height,segment,startT,endT);
+          }
+          wrap.style.display='block';
+        }
+
         function render(r) {
           const baseMetrics=[['毒維持率',`${(r.uptime*100).toFixed(3)}%`],['平均ヒット/戦闘',r.hits.toFixed(2)]]; const critMetrics=$('specialEffect').value==='crit'?[['平均クリティカル(弱点命中)/戦闘',r.crits.toFixed(2)],['平均近接ヒット/戦闘',r.meleeHits.toFixed(2)],['平均遠隔ヒット/戦闘',r.rangedHits.toFixed(2)],['平均近接クリティカル(弱点命中)/戦闘',r.meleeCrits.toFixed(2)],['平均遠隔クリティカル(弱点命中)/戦闘',r.rangedCrits.toFixed(2)]]:[]; $('metrics').innerHTML=[...baseMetrics,...critMetrics,['平均通常攻撃ヒット/戦闘',r.normalHits.toFixed(2)],['平均スキル発動/戦闘',r.skillActivations.toFixed(2)],['平均毒判定/戦闘',r.poisonAttempts.toFixed(2)],['平均成功/戦闘',r.successes.toFixed(2)],['平均成功率',`${(r.successRate*100).toFixed(3)}%`]].map(x=>`<div class="metric"><span>${x[0]}</span><b>${x[1]}</b></div>`).join('');
-          const c=$('chart'),ctx=c.getContext('2d'),w=c.width,h=c.height;ctx.clearRect(0,0,w,h);ctx.strokeStyle='#cbd5e1';ctx.beginPath();ctx.moveTo(45,20);ctx.lineTo(45,h-35);ctx.lineTo(w-20,h-35);ctx.stroke();ctx.fillStyle='#475569';ctx.font='12px system-ui';ctx.fillText('trial',w-45,h-15);ctx.fillText('uptime',8,20);const vals=r.timeline.map(x=>x.uptime),bw=Math.max(10,(w-80)/Math.max(vals.length,1)-4);vals.forEach((v,i)=>{const x=50+i*(bw+4),y=(h-35)-v*(h-60);ctx.fillRect(x,y,bw,v*(h-60));ctx.fillText(String(i+1),x,h-22);});
+          renderProbabilityCharts(r.executionProbabilityTimeline||[]);
           $('log').textContent='';
         }
 
@@ -132,63 +186,43 @@ function esc(v) {
               function actionLabel(a) {
                 return a===0?'通常攻撃':`アドバンススキル${a}`;}
                 function randomPolicyCandidates(count) {
-                  const rng=(()=>{let x=123456789;return()=>{x^=x<<13;x^=x>>>17;x^=x<<5;return (x>>>0)/4294967296;};})();
-                  const thresholdsP=[0.5,1,2,3,5,7], thresholdsR=[25,50,75,100], actions=[0,1,2,3];
-                  const out=[], seen=new Set();
-                  while(out.length<count) {
-                    const p=thresholdsP[Math.floor(rng()*thresholdsP.length)], r=thresholdsR[Math.floor(rng()*thresholdsR.length)];
-                    const a1=actions[Math.floor(rng()*actions.length)],a2=actions[Math.floor(rng()*actions.length)],a3=actions[Math.floor(rng()*actions.length)];
-                    const key=[p,r,a1,a2,a3].join('|'); if(seen.has(key))continue;seen.add(key);
-                    out.push({poisonThreshold:p,resistThreshold:r,urgent:a1,highResist:a2,defaultAction:a3});
-                  }
-                  return out;
-                }
-                function policyFromSpec(spec) {
-                  return {rules:[{type:'poison_le',value:spec.poisonThreshold,action:spec.urgent},{type:'resist_ge',value:spec.resistThreshold,action:spec.highResist}],defaultAction:spec.defaultAction};
-                }
-                function policyText(p, rotation=[1,2,3]) {
-                  return `毒残り時間 ≤ ${p.poisonThreshold}s → ${actionLabel(p.urgent)}\n毒残り時間が上記を超え、毒耐性 ≥ ${p.resistThreshold}% → ${actionLabel(p.highResist)}\nそれ以外 → ${actionLabel(p.defaultAction)}\n※指定したスキルがクールタイム中の場合は、代替ローテーション「${rotation.join(' → ')}」の順に、使用可能なスキルを選択します。`}
-                  function optimizeRotation() {
-                    const skills=readSkills();
-                    if(skills.length!==3) throw new Error('自動最適化は3スキルを前提にしています。特殊スキルを含め、3枠のまま設定してください。');
-                    const coarseTrials=Math.max(50,Math.min(500,+$('optTrials').value||200));
-                    const topK=Math.max(3,Math.min(30,+$('optTopK').value||10));
-                    const maxLen=Math.max(1,Math.min(7,+$('optDepth').value||5));
-                    const base=readCfg(null,coarseTrials), candidates=makeCandidates(3,maxLen), scored=[];
-                    $('status').textContent=`最適化中… ${candidates.length}候補を粗探索`;
-                    for(let i=0;i<candidates.length;i++) {
-                      const r=runSimulation({...base,rotation:candidates[i],seed:24681357+i*97});scored.push({rotation:candidates[i],score:r.uptime});}
-                      scored.sort((a,b)=>b.score-a.score);const finalists=scored.slice(0,topK),fullTrials=Math.max(100,+$('trials').value||10000);let best=null;
-                      for(let i=0;i<finalists.length;i++) {
-                        $('status').textContent=`最適化中… 最終評価 ${i+1}/${finalists.length}`;const c=readCfg(finalists[i].rotation,fullTrials);c.seed=975318642+i*101;const r=runSimulation(c),x={rotation:finalists[i].rotation,score:r.uptime,result:r};if(!best||x.score>best.score)best=x; }
-                        if(!best)throw new Error('最適化候補がありません。');
-                        lastResult=best.result;render(best.result);
-                        const ranking=finalists.map((x,i)=>`${i+1}. ${x.rotation.join(' → ')} : ${(x.score*100).toFixed(3)}%`).join('\n');
-                        $('optimizationResult').textContent=`【固定ローテーション最適化】\n最適戦略：${best.rotation.join(' → ')}\n最終評価 毒維持率：${(best.score*100).toFixed(3)}%\n\n粗探索上位候補：\n${ranking}`;
-                      }
-                      function optimizePolicy() {
-                        const skills=readSkills();
-                        if(skills.length!==3) throw new Error('自動最適化は3スキルを前提にしています。特殊スキルを含め、3枠のまま設定してください。');
-                        const coarseTrials=Math.max(50,Math.min(300,+$('optTrials').value||200));
-                        const topK=Math.max(3,Math.min(20,+$('optTopK').value||10));
-                        const sampleCount=Math.max(50,Math.min(400,+$('optDepth').value*60||300));
-                        const base=readCfg([1,2,3],coarseTrials);
-                        const candidates=randomPolicyCandidates(sampleCount),scored=[];
-                        $('status').textContent=`最適化中… 条件分岐候補を${candidates.length}個粗探索`;
-                        for(let i=0;i<candidates.length;i++) {
-                          const c={...base,policy:policyFromSpec(candidates[i]),seed:31415926+i*131};
-                          const r=runSimulation(c);scored.push({...candidates[i],score:r.uptime});
-                        }
-                        scored.sort((a,b)=>b.score-a.score);const finalists=scored.slice(0,topK),fullTrials=Math.max(100,+$('trials').value||10000);let best=null;
-                        for(let i=0;i<finalists.length;i++) {
-                          $('status').textContent=`最適化中… 条件分岐の最終評価 ${i+1}/${finalists.length}`;const c=readCfg([1,2,3],fullTrials);c.policy=policyFromSpec(finalists[i]);c.seed=27182818+i*173;const r=runSimulation(c),x={...finalists[i],result:r};if(!best||x.result.uptime>best.result.uptime)best=x; }
-                          if(!best)throw new Error('条件分岐候補がありません。');
-                          lastResult=best.result;render(best.result);
-                          const rankText=finalists.map((x,i)=>`${i+1}. P≤${x.poisonThreshold}s / R≥${x.resistThreshold} → [${actionLabel(x.urgent)}, ${actionLabel(x.highResist)}, ${actionLabel(x.defaultAction)}] : ${(x.score*100).toFixed(3)}%`).join('\n');
-                          $('optimizationResult').textContent=`【条件分岐型最適化】\n${policyText(best)}\n\n最終評価 毒維持率：${(best.result.uptime*100).toFixed(3)}%\n\n粗探索上位候補：\n${rankText}`;
-                        }
+  // Compatibility name retained. The policy space is deterministic and uses
+  // only player-observable information; hidden resistance R is not exposed.
+  const skills=readSkills();
+  const base=readCfg([1,2,3],Math.max(1,+$('optTrials').value||200));
+  return policySpecsAll(Number($('duration').value)||600,skills,base);
+}
+function policyFromSpec(spec) {
+  return {rules:[
+    {type:'poison_le',value:spec.poisonThreshold,action:spec.urgent},
+    {type:'success_streak_ge',value:spec.successStreak,action:spec.highSuccess}
+  ],defaultAction:spec.defaultAction};
+}
+function policyText(p, rotation=[1,2,3]) {
+  return `毒残り時間 ≤ ${p.poisonThreshold}s → ${actionLabel(p.urgent)}\n毒残り時間が上記を超え、直近の毒付与成功連続回数 ≥ ${p.successStreak}回 → ${actionLabel(p.highSuccess)}\nそれ以外 → ${actionLabel(p.defaultAction)}\n※毒耐性Rは分岐条件として使用しません。プレイヤーが観測できる「毒付与成功」の連続回数だけを使用します。\n※指定したスキルがクールタイム中の場合は、代替ローテーション「${rotation.join(' → ')}」の順に、使用可能なスキルを選択します。`;
+}
+function policySpecsAll(duration,skills,simBase={}){
+  // Human-executable policy space. R is deliberately absent.
+  // 8 poison thresholds × 3 success-streak thresholds × 4^3 actions = 1536.
+  const D=Math.max(0,Number(simBase.ailmentDuration ?? $('ailmentDuration')?.value)||0);
+  const durationN=Math.max(0,Number(duration)||0), q=v=>Math.round(v*1e9)/1e9;
+  const uniqueP=[...new Set([0,0.5,1,2,3,5,7,Math.min(D,durationN)].map(q))];
+  const specs=[];
+  for(const P of uniqueP) for(let successStreak=1;successStreak<=3;successStreak++)
+    for(let urgent=0;urgent<=3;urgent++) for(let highSuccess=0;highSuccess<=3;highSuccess++)
+      for(let def=0;def<=3;def++) specs.push({poisonThreshold:P,successStreak,urgent,highSuccess,defaultAction:def});
+  policySpecsAll.lastMeta={policyCount:specs.length,pCount:uniqueP.length,streakCount:3};
+  return specs;
+}
+function policyKey(p){return [p.poisonThreshold,p.successStreak,p.urgent,p.highSuccess,p.defaultAction].join('|');}
+const optimizerPolicyCache=new Map();
+function policyFromSpecCached(spec) {
+  const k=policyKey(spec), hit=optimizerPolicyCache.get(k); if(hit)return hit;
+  const p=policyFromSpec(spec); if(optimizerPolicyCache.size>=2048)optimizerPolicyCache.delete(optimizerPolicyCache.keys().next().value);
+  optimizerPolicyCache.set(k,p); return p;
+}
 
-                        function* enumerateEquipmentSlots(count) {
+function* enumerateEquipmentSlots(count) {
   const g1=EQUIP_OPTIONS.g1,g2a=EQUIP_OPTIONS.g2a,g2b=EQUIP_OPTIONS.g2b;
   for(let a=0;a<g1.length;a++) for(let b=0;b<g1.length;b++) for(let c=0;c<g1.length;c++) {
     if(count===3) {
@@ -240,28 +274,6 @@ function basicStrategyCandidates(){
   [[1,2,3],[1,3,2],[2,1,3],[2,3,1],[3,1,2],[3,2,1]].forEach(add);
   return out;
 }
-function policySpecsAll(duration,baseResist){
-  const ps=[0,0.5,1,2,3,5,7,9,Math.min(10,Math.max(0,duration))];
-  const rs=[25,50,75,100,Math.max(0,baseResist)].filter((v,i,a)=>a.indexOf(v)===i);
-  const out=[];
-  for(const p of ps)for(const r of rs)for(let a=0;a<4;a++)for(let b=0;b<4;b++)for(let c=0;c<4;c++)
-    out.push({poisonThreshold:p,resistThreshold:r,urgent:a,highResist:b,defaultAction:c});
-  return out;
-}
-function policyKey(p){return [p.poisonThreshold,p.resistThreshold,p.urgent,p.highResist,p.defaultAction].join('|');}
-const optimizerPolicyCache=new Map();
-function policyFromSpec(spec){
-  const k=policyKey(spec);
-  const hit=optimizerPolicyCache.get(k);
-  if(hit)return hit;
-  const p={rules:[{type:'poison_le',value:spec.poisonThreshold,action:spec.urgent},{type:'resist_ge',value:spec.resistThreshold,action:spec.highResist}],defaultAction:spec.defaultAction};
-  if(optimizerPolicyCache.size>=1024)optimizerPolicyCache.delete(optimizerPolicyCache.keys().next().value);
-  optimizerPolicyCache.set(k,p);
-  return p;
-}
-function policyText(p, rotation=[1,2,3]){
-  return `毒残り時間 ≤ ${p.poisonThreshold}s → ${actionLabel(p.urgent)}\n毒残り時間が上記を超え、毒耐性 ≥ ${p.resistThreshold}% → ${actionLabel(p.highResist)}\nそれ以外 → ${actionLabel(p.defaultAction)}\n※指定したスキルがクールタイム中の場合は、代替ローテーション「${rotation.join(' → ')}」の順に、使用可能なスキルを選択します。`;
-}
 function farthestEquipmentSample(all,n){
   if(n>=all.length)return all.slice();
   const vec=e=>[e.poisonHit,e.ailment,e.ctPromo,e.instant],scale=[100,100,100,22];
@@ -285,23 +297,8 @@ function farthestEquipmentSample(all,n){
   }
   return selected.slice(0,n);
 }
-function makeSeedSet(count){
-  const out=[],seen=new Set();
-  const ps=[0,0.5,1,2,3,5,7,9],rs=[25,50,75,100];
-  const add=(p,r,a,b,c)=>{const q={poisonThreshold:p,resistThreshold:r,urgent:a,highResist:b,defaultAction:c},k=policyKey(q);if(!seen.has(k)){seen.add(k);out.push(q);}};
-  for(let a=0;a<4;a++)for(let b=0;b<4;b++)for(let c=0;c<4;c++)add(1,50,a,b,c);
-  for(let a=0;a<4&&out.length<count;a++)for(let b=0;b<4&&out.length<count;b++)for(let c=0;c<4&&out.length<count;c++)add(3,75,a,b,c);
-  let seed=0x9e3779b9;
-  const rnd=()=>{seed^=seed<<13;seed^=seed>>>17;seed^=seed<<5;return(seed>>>0)/4294967296;};
-  while(out.length<count){
-    add(ps[Math.floor(rnd()*ps.length)],rs[Math.floor(rnd()*rs.length)],Math.floor(rnd()*4),Math.floor(rnd()*4),Math.floor(rnd()*4));
-  }
-  return out.slice(0,count);
-}
-
-
 function piSeed(rotationIndex,policy){
-  return 1000003*rotationIndex + 97*policy.urgent + 193*policy.highResist + 389*policy.defaultAction + Math.floor(policy.poisonThreshold*10)*997 + Math.floor(policy.resistThreshold)*1009;
+  return 1000003*rotationIndex + 97*policy.urgent + 193*policy.highSuccess + 389*policy.defaultAction + Math.floor(policy.poisonThreshold*10)*997 + Math.floor(policy.successStreak)*1009;
 }
 async function optimizeJoint(){
   const skills=readSkills();
@@ -311,7 +308,6 @@ async function optimizeJoint(){
   const topK=Math.max(1,Math.min(10,Math.floor(+$('optTopK').value||10)));
   const requestedTrials=Math.max(100,Math.floor(+$('trials').value||5000));
   const duration=Math.max(1,Number($('duration').value)||600);
-  const effort=Math.max(1,Math.min(1340,Math.floor(+$('optDepth').value||200)));
   const userCoarse=Math.max(1,Math.min(1000,Math.floor(+$('optTrials').value||50)));
   const yieldUI=()=>new Promise(requestAnimationFrame);
   $('optimize').disabled=true;$('optimizationResult').textContent='';
@@ -323,7 +319,7 @@ async function optimizeJoint(){
   //  3) All 15 fixed fallback rotations are treated symmetrically.
   //  4) Every racing stage uses common random numbers: candidate identity never
   //     changes the seed. This makes small trial budgets much more informative.
-  //  5) Conditional policies are the full 2880-state grid, never randomly sampled.
+  //  5) Conditional policies are exhaustively generated from player-observable states; hidden resistance R is never a policy input.
   //  6) Candidates are retained by an uncertainty-aware margin, not by one noisy
   //     rank only. Several candidates per equipment survive into the final race.
   //  7) Final Top-N is collapsed by the four aggregate equipment totals.
@@ -333,8 +329,8 @@ async function optimizeJoint(){
     const allRaw=collectUniqueEquipment(count);
     const all=paretoPruneEquipment(allRaw);
     const rotations=basicStrategyCandidates();
-    const policies=policySpecsAll(duration,Number($('baseResist').value)||50);
     const base=readCfg([1,2,3],1);
+    const policies=policySpecsAll(duration,skills,base);
 
     // Reusable optimizer workers: expensive equipment-level stages are parallelized
     // without changing the search space or random seeds. Each worker receives the
@@ -349,7 +345,7 @@ async function optimizeJoint(){
         const ok=ev=>{slot.w.removeEventListener('message',ok);slot.w.removeEventListener('error',err);resolve();};
         const err=e=>{slot.w.removeEventListener('message',ok);slot.w.removeEventListener('error',err);reject(e);};
         slot.w.addEventListener('message',ok);slot.w.addEventListener('error',err);
-        slot.w.postMessage({cmd:'init',base,skills,policies,rotations});
+        slot.w.postMessage({cmd:'init',base,skills,rotations});
       })));
     };
     const parallelStage=async(jobs,label)=>{
@@ -368,10 +364,7 @@ async function optimizeJoint(){
     };
     await initWorkers();
 
-    // The UI's exploration-size field is now only a performance knob for the
-    // policy stage. Equipment states themselves are still exhaustively screened.
-    const policyPoolSize=Math.max(40,Math.min(all.length,Math.max(effort,topK*10)));
-    const screenDuration=Math.min(duration,30);
+      const screenDuration=Math.min(duration,30);
     const screenTrials=Math.max(1,Math.min(6,Math.ceil(userCoarse/20)));
     const screenSeed=0x13579BDF;
     const screen=[];
@@ -391,15 +384,15 @@ async function optimizeJoint(){
       rotation:(rotationScores.get(equipmentKey(eq))||[]).slice().sort((a,b)=>b.score-a.score)[0]?.rotation||[1,2,3],
       score:(rotationScores.get(equipmentKey(eq))||[]).reduce((m,x)=>Math.max(m,x.score),-Infinity)
     }));
-    $('status').textContent=`最適化中… Pareto前線 ${policyPool.length}/${allRaw.length} 装備`;
+    $('status').textContent=`最適化中… Pareto前線 ${policyPool.length}/${allRaw.length} 装備 → 条件分岐を決定論的スクリーニング`;
     await yieldUI();
 
-    // ---------- Stage 3: all 2880 policies, cheap common-random screen ----------
+    // ---------- Stage 3: deterministic stratified policy screen (no random sampling) ----------
     const pTrials=Math.max(1,Math.min(4,Math.ceil(userCoarse/25)));
     const pDuration=Math.min(duration,30);
     const policySeed=0x2468ACE1;
-    const policyJobs=policyPool.map((item,ei)=>({id:ei,msg:{cmd:'policyScreen',id:ei,equipment:item.equipment,fallback:item.rotation,duration:pDuration,trials:pTrials,seed:policySeed},fallback:async()=>{const out=[];for(let pi=0;pi<policies.length;pi++){const p=policies[pi],c={...base,equipment:item.equipment,rotation:item.rotation,policy:policyFromSpec(p),duration:pDuration,trials:pTrials,seed:policySeed};out.push({index:pi,score:runSimulation(c).uptime});}out.sort((a,b)=>b.score-a.score);return {top:out.slice(0,64)};}}));
-    const policyResults=await parallelStage(policyJobs,'全2880方針');
+    const policyJobs=policyPool.map((item,ei)=>({id:ei,msg:{cmd:'policyScreen',id:ei,equipment:item.equipment,fallback:item.rotation,duration:pDuration,trials:pTrials,seed:policySeed,policyBudget:policies.length},fallback:async()=>{const out=[];for(let pi=0;pi<policies.length;pi++){const p=policies[pi],c={...base,equipment:item.equipment,rotation:item.rotation,policy:policyFromSpec(p),duration:pDuration,trials:pTrials,seed:policySeed};out.push({index:pi,score:runSimulation(c).uptime});}out.sort((a,b)=>b.score-a.score);return {top:out.slice(0,64)};}}));
+    const policyResults=await parallelStage(policyJobs,'全条件分岐方針');
     const policyLeaders=[];
     for(let ei=0;ei<policyPool.length;ei++){const item=policyPool[ei],res=policyResults[ei];for(const z of res.top){policyLeaders.push({equipment:item.equipment,policy:policies[z.index],policyIndex:z.index,rotation:item.rotation,score:z.score});}}
 
@@ -658,24 +651,20 @@ async function optimizeJoint(){
     }
     const ranking=[...byEquip.values()].sort((a,b)=>b.score-a.score).slice(0,topK);
     if(!ranking.length)throw new Error('最適化候補がありません。');
-    $('status').textContent='最適化中… 高速化検証を実行しています';
-    await yieldUI();
-    const verification=verifyFastSimulator();
-    if(!verification.ok) throw new Error('高速化検証に失敗しました：'+verification.message);
-    const best=ranking[0];
-    optimizedEquipment=best.equipment;lastResult=best.result;render(best.result);
+        const best=ranking[0];
+    optimizedEquipment=best.equipment;lastResult=best.result;
+    const probTrials=Math.max(200,Math.min(1200,Math.floor(Number(base.trials)||200)));
+    const probabilityResult=runSimulation({...base,equipment:best.equipment,rotation:best.rotation,policy:best.policy?policyFromSpec(best.policy):null,trials:probTrials,seed:0x7A11CE,__probTimeline:true,__probStep:0.5});
+    best.result.executionProbabilityTimeline=probabilityResult.executionProbabilityTimeline||[];
+    render(best.result);
     renderEquipmentResult(best.equipment);
-    const lines=ranking.map((x,i)=>{
-      const pol=x.policy?`条件分岐: P≤${x.policy.poisonThreshold}s / R≥${x.policy.resistThreshold}% → [${actionLabel(x.policy.urgent)}, ${actionLabel(x.policy.highResist)}, ${actionLabel(x.policy.defaultAction)}] / 代替ローテーション ${x.rotation.join(' → ')}`:`固定ローテーション ${x.rotation.join(' → ')}`;
-      return `${i+1}. ${pol} / 毒 ${(x.equipment.poisonHit||0).toFixed(1)}% / 状態異常 ${(x.equipment.ailment||0).toFixed(1)}% / CT促進 ${(x.equipment.ctPromo||0).toFixed(1)}% / 即時CT ${(x.equipment.instant||0).toFixed(1)}% : ${(x.score*100).toFixed(3)}%`;
-    }).join('\n');
     const strategyHeader=best.policy?'条件分岐戦略':'固定ローテーション';
     const strategyBody=best.policy?`${policyText(best.policy,best.rotation)}`:`ローテーション：${best.rotation.join(' → ')}`;
-    $('optimizationResult').textContent=`${equipmentEffectsText(best.equipment)}\n\n【高速化検証】${verification.message}\n\n【装備＋アドバンススキル使用方法の最適化】\n最適戦略：${strategyHeader}\n${strategyBody}\n\n最終評価 毒維持率：${(best.score*100).toFixed(3)}%\n\n異なる装備合計値の上位${ranking.length}候補：\n${lines}`;
+    $('optimizationResult').textContent=`【装備＋アドバンススキル使用方法の最適化】\n最適戦略：${strategyHeader}\n${strategyBody}\n\n最終評価 毒維持率：${(best.score*100).toFixed(3)}%`;
     // Also render the full ranking in the Results section, not only in the
     // optimization-control section. This keeps candidates 2..Top-K visible.
     const rankHtml=ranking.map((x,i)=>{
-      const pol=x.policy?`条件分岐: P≤${x.policy.poisonThreshold}s / R≥${x.policy.resistThreshold}% → [${actionLabel(x.policy.urgent)}, ${actionLabel(x.policy.highResist)}, ${actionLabel(x.policy.defaultAction)}] / 代替ローテーション ${x.rotation.join(' → ')}`:`固定ローテーション ${x.rotation.join(' → ')}`;
+      const pol=x.policy?`条件分岐: 毒残り時間≤${x.policy.poisonThreshold}s / 成功連続≥${x.policy.successStreak}回 → [${actionLabel(x.policy.urgent)}, ${actionLabel(x.policy.highSuccess)}, ${actionLabel(x.policy.defaultAction)}] / 代替ローテーション ${x.rotation.join(' → ')}`:`固定ローテーション ${x.rotation.join(' → ')}`;
       return `<div class="rank-row"><strong>${i+1}位</strong>　毒維持率 ${(x.score*100).toFixed(3)}%　毒+${x.equipment.poisonHit.toFixed(1)}%　状態異常+${x.equipment.ailment.toFixed(1)}%　CT促進+${x.equipment.ctPromo.toFixed(1)}%　即時CT+${x.equipment.instant.toFixed(1)}%<br><span>${pol}</span></div>`;
     }).join('');
     $('optimizationRanking').innerHTML=`<h3>異なる装備合計値の上位${ranking.length}候補</h3>${rankHtml}`;

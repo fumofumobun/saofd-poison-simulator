@@ -38,8 +38,8 @@ function clamp(x,a,b) {
         const compiledPolicy = cfg.policy && cfg.policy.rules ? {
           poisonThreshold: Number(cfg.policy.rules[0]?.value ?? Infinity),
           urgent: Number(cfg.policy.rules[0]?.action ?? 0),
-          resistThreshold: Number(cfg.policy.rules[1]?.value ?? Infinity),
-          highResist: Number(cfg.policy.rules[1]?.action ?? 0),
+          successStreak: Number(cfg.policy.rules[1]?.value ?? Infinity),
+          highSuccess: Number(cfg.policy.rules[1]?.action ?? 0),
           defaultAction: Number(cfg.policy.defaultAction ?? 0)
         } : null;
         const compiledRotation = (cfg.rotation||[]).filter(n=>Number.isInteger(n)&&n>=1&&n<=skillData.length).map(n=>n-1);
@@ -53,7 +53,7 @@ function clamp(x,a,b) {
           const ready=skills.map(()=>0);
           const cooldownReduction=skills.map(()=>0);
           const cooldownStart=skills.map(()=>0);
-          let t=0,busyUntil=0,poisonUntil=-Infinity,resist=Number(cfg.baseResist)||0,peakRes=resist,u=0,comboHits=0;
+          let t=0,busyUntil=0,poisonUntil=-Infinity,resist=Number(cfg.baseResist)||0,peakRes=resist,u=0,comboHits=0,successStreak=0;
           let hpMaxActive = specialEffect==='hpmax' ? (rng()<hpMaxUptime) : false;
           let lastHpCheck = 0;
           let nextNormal=normalHz>0?0:Infinity;
@@ -93,6 +93,7 @@ function clamp(x,a,b) {
             if(rng()<p) {
               successes++; totalPoisonSuccesses++;
               if(!special) {
+                successStreak++;
                 resist+=Number(cfg.rise)||0;peakRes=Math.max(peakRes,resist);}
                 if(Number(cfg.ailmentDuration)>0) {
                   const end=Math.min(duration,t+Number(cfg.ailmentDuration));
@@ -100,6 +101,7 @@ function clamp(x,a,b) {
                     if(t>=poisonUntil)u+=end-t; else if(end>poisonUntil)u+=end-poisonUntil; poisonUntil=Math.max(poisonUntil,end); }
                   }
                 } else if(!special) {
+                  successStreak=0;
                   const baseResist = Number(cfg.baseResist)||0;
                   resist=Math.max(baseResist, resist-(Number(cfg.fall)||0));
                 }
@@ -133,7 +135,7 @@ function clamp(x,a,b) {
                       if(compiledPolicy) {
                         const remaining=poisonUntil-t;
                         if(remaining<=compiledPolicy.poisonThreshold) return compiledPolicy.urgent;
-                        if(resist>=compiledPolicy.resistThreshold) return compiledPolicy.highResist;
+                        if(successStreak>=compiledPolicy.successStreak) return compiledPolicy.highSuccess;
                         return compiledPolicy.defaultAction;
                       }
                       return null;

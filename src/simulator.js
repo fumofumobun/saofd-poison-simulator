@@ -68,8 +68,8 @@ function clamp(x,a,b) {
         const compiledPolicy = cfg.policy && cfg.policy.rules ? {
           poisonThreshold: Number(cfg.policy.rules[0]?.value ?? Infinity),
           urgent: Number(cfg.policy.rules[0]?.action ?? 0),
-          resistThreshold: Number(cfg.policy.rules[1]?.value ?? Infinity),
-          highResist: Number(cfg.policy.rules[1]?.action ?? 0),
+          successStreak: Number(cfg.policy.rules[1]?.value ?? Infinity),
+          highSuccess: Number(cfg.policy.rules[1]?.action ?? 0),
           defaultAction: Number(cfg.policy.defaultAction ?? 0)
         } : null;
         const compiledRotation = (cfg.rotation||[]).filter(n=>Number.isInteger(n)&&n>=1&&n<=skillData.length).map(n=>n-1);
@@ -77,6 +77,10 @@ function clamp(x,a,b) {
         for(let di=0;di<skillData.length;di++)defaultOrder[di]=di;
         let uptimeSum=0, attempts=0, successes=0, maxRes=0, totalHits=0;
         let totalPoisonAttempts=0,totalPoisonSuccesses=0,totalCrits=0,totalNormalHits=0,totalSkillActivations=0,totalRangedHits=0,totalMeleeHits=0,totalMeleeCrits=0,totalRangedCrits=0;
+         const collectProbTimeline=cfg.__probTimeline===true && !fastMode;
+         const probStep=Math.max(0.1,Number(cfg.__probStep)||0.5);
+         const probSum=collectProbTimeline?new Float64Array(Math.ceil(duration/probStep)+1):null;
+         const probCount=collectProbTimeline?new Uint32Array(Math.ceil(duration/probStep)+1):null;
         const timeline=[];
         // Reuse per-trial typed arrays instead of allocating three Float64Arrays
         // for every Monte-Carlo trial. This is semantics-preserving and targets
@@ -99,7 +103,7 @@ function clamp(x,a,b) {
           ready.fill(0);
           cooldownReduction.fill(0);
           cooldownStart.fill(0);
-          let t=0,busyUntil=0,poisonUntil=-Infinity,resist=baseResist,peakRes=resist,u=0,comboHits=0;
+          let t=0,busyUntil=0,poisonUntil=-Infinity,resist=baseResist,peakRes=resist,u=0,comboHits=0,successStreak=0;
           let hpMaxActive = specialEffect==='hpmax' ? (rng()<hpMaxUptime) : false;
           let lastHpCheck = 0;
           let nextNormal=normalHz>0?0:Infinity;
@@ -136,9 +140,11 @@ function clamp(x,a,b) {
             if(!special && !(numericChance>0)) return false;
             if(!fastMode){attempts++; totalPoisonAttempts++;}
             const p=special?(1/3):chanceFromResist(numericChance,resist,'subtract');
+             if(collectProbTimeline){const bi=Math.max(0,Math.min(probSum.length-1,Math.floor(t/probStep+1e-9)));probSum[bi]+=p;probCount[bi]++;}
             if(rng()<p) {
               if(!fastMode){successes++; totalPoisonSuccesses++;}
               if(!special) {
+                successStreak++;
                 resist+=rise;peakRes=Math.max(peakRes,resist);}
                 if(ailmentDuration>0) {
                   const end=Math.min(duration,t+Number(cfg.ailmentDuration));
@@ -146,6 +152,7 @@ function clamp(x,a,b) {
                     if(t>=poisonUntil)u+=end-t; else if(end>poisonUntil)u+=end-poisonUntil; poisonUntil=Math.max(poisonUntil,end); }
                   }
                 } else if(!special) {
+                  successStreak=0;
                   resist=Math.max(baseResist, resist-(fall));
                 }
               }
@@ -181,7 +188,7 @@ function clamp(x,a,b) {
                       if(compiledPolicy) {
                         const remaining=poisonUntil-t;
                         if(remaining<=compiledPolicy.poisonThreshold) return compiledPolicy.urgent;
-                        if(resist>=compiledPolicy.resistThreshold) return compiledPolicy.highResist;
+                        if(successStreak>=compiledPolicy.successStreak) return compiledPolicy.highSuccess;
                         return compiledPolicy.defaultAction;
                       }
                       return null;
@@ -263,7 +270,8 @@ function clamp(x,a,b) {
                                         if(!fastMode && n<trialStart+20)timeline.push({trial:n+1,uptime:duration>0?clamp(u/duration,0,1):0});
                                       }
                                       if(fastMode)return {uptime:uptimeSum/trials};
-                                      return {uptime:uptimeSum/trials,attempts:attempts/trials,successes:successes/trials,successRate:attempts?successes/attempts:0,maxRes,timeline,hits:totalHits/trials,poisonAttempts:totalPoisonAttempts/trials,poisonSuccesses:totalPoisonSuccesses/trials,crits:critEnabled?totalCrits/trials:0,meleeHits:critEnabled?totalMeleeHits/trials:0,rangedHits:critEnabled?totalRangedHits/trials:0,meleeCrits:critEnabled?totalMeleeCrits/trials:0,rangedCrits:critEnabled?totalRangedCrits/trials:0,normalHits:totalNormalHits/trials,skillActivations:totalSkillActivations/trials};
+                                      const executionProbabilityTimeline=collectProbTimeline?Array.from({length:probSum.length},(_,i)=>({time:Math.min(i*probStep,duration),probability:probCount[i]>0?probSum[i]/probCount[i]:null})).filter(q=>q.probability!==null):[];
+                                      return {uptime:uptimeSum/trials,attempts:attempts/trials,successes:successes/trials,successRate:attempts?successes/attempts:0,maxRes,timeline,hits:totalHits/trials,poisonAttempts:totalPoisonAttempts/trials,poisonSuccesses:totalPoisonSuccesses/trials,crits:critEnabled?totalCrits/trials:0,meleeHits:critEnabled?totalMeleeHits/trials:0,rangedHits:critEnabled?totalRangedHits/trials:0,meleeCrits:critEnabled?totalMeleeCrits/trials:0,rangedCrits:critEnabled?totalRangedCrits/trials:0,normalHits:totalNormalHits/trials,skillActivations:totalSkillActivations/trials,executionProbabilityTimeline};
                                     }
 
 // Optimizer-only hot path. This deliberately returns only uptime, because the
