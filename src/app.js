@@ -111,7 +111,7 @@ function esc(v) {
             {...base,specialEffect:'crit',critRate:35,normalRangedRate:0,policy:null,rotation:[2,3,1],seed:0x3456789a,trialStart:7},
             {...base,specialEffect:'crit',critRate:95,normalRangedRate:100,policy:null,rotation:[3,2,1],seed:0x456789ab,duration:37,trials:13}
           ];
-          for(const c of cases){const a=runSimulation(c),b=runSimulationFast(c);if(Math.abs(a.uptime-b.uptime)>1e-12)return {ok:false,message:'Optimizer高速シミュレータが参照シミュレータと不一致'};}
+          for(const c of cases){const a=runSimulation(c),b=runSimulationFast(c);if(!a||!b||!Number.isFinite(a.uptime)||!Number.isFinite(b.uptime)||Math.abs(a.uptime-b.uptime)>1e-12)return {ok:false,message:'Optimizer高速シミュレータが参照シミュレータと不一致'};}
           return {ok:true,message:'Optimizer高速シミュレータは参照シミュレータと完全一致'};
         }
 
@@ -562,6 +562,9 @@ async function optimizeJoint(){
             if(failed)return;
             if(ev.data?.cmd!=='batchResult'){slot.w.addEventListener('message',onMessage);slot.w.addEventListener('error',onError);return;}
             const results=ev.data.results||[];
+            if(results.length!==batch.length || results.some(r=>!r||!Number.isFinite(r.uptime))){
+              failed=true; reject(new Error(`${label}: Worker結果が不正です（件数またはuptime）`)); return;
+            }
             for(let k=0;k<batch.length;k++){const j=batch[k],r=results[k];out[j.id]={...j.x,result:r,score:r.uptime};done++;}
             $('status').textContent=`最適化中… ${label} ${done}/${jobs.length}`;
             if(done>=jobs.length){resolve(out.sort((a,b)=>b.score-a.score));return;}
@@ -602,12 +605,16 @@ async function optimizeJoint(){
           const out=new Array(jobs.length);let next=0,done=0,failed=false;
           const dispatch=slot=>{if(failed||next>=jobs.length)return;const j=jobs[next++];
             const onM=ev=>{slot.w.removeEventListener('message',onM);slot.w.removeEventListener('error',onE);if(failed)return;
-              if(ev.data?.cmd!=='batchResult'){return;} out[j.id]=ev.data.results?.[0];done++;$('status').textContent=`最適化中… 最終候補中精度評価 ${done}/${jobs.length}`;if(done>=jobs.length)resolve(out);else dispatch(slot);};
+              if(ev.data?.cmd!=='batchResult'){return;}
+              const rr=ev.data.results||[];
+              if(rr.length!==1||!rr[0]||!Number.isFinite(rr[0].uptime)){failed=true;reject(new Error('最終候補追加評価のWorker結果が不正です'));return;}
+              out[j.id]=rr[0];done++;$('status').textContent=`最適化中… 最終候補中精度評価 ${done}/${jobs.length}`;if(done>=jobs.length)resolve(out);else dispatch(slot);};
             const onE=e=>{slot.w.removeEventListener('message',onM);slot.w.removeEventListener('error',onE);if(!failed){failed=true;reject(e);}};
             slot.w.addEventListener('message',onM);slot.w.addEventListener('error',onE);slot.w.postMessage({cmd:'batchRun',id:j.id,candidates:[j.cfg]});
           };workerPool.forEach(dispatch);
         });
       }
+      if(extraResults.length!==race.length||extraResults.some(r=>!r||!Number.isFinite(r.uptime)))throw new Error('追加試行の結果が不正です');
       race=race.map((x,i)=>{const add=extraResults[i],prev=x.result;const total=stage1Trials+additional;
         const score=(prev.uptime*stage1Trials+add.uptime*additional)/total;
         return {...x,result:{...prev,uptime:score},score};
