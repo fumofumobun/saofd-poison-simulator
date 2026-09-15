@@ -155,82 +155,281 @@ function esc(v) {
                           const g1=EQUIP_OPTIONS.g1,g2a=EQUIP_OPTIONS.g2a,g2b=EQUIP_OPTIONS.g2b;
                           for(let a=0;a<g1.length;a++)for(let b=0;b<g1.length;b++)for(let c=0;c<g1.length;c++) {
                             if(count===3) {
-                              for(let x=0;x<g2a.length;x++)for(let y=0;y<g2b.length;y++)for(let z=0;z<g2b.length;z++)
-                              yield {g1:[g1[a],g1[b],g1[c]],g2a:g2a[x],g2b:[g2b[y],g2b[z]]};
-                            }else{
-                              for(let d=0;d<g1.length;d++)for(let x=0;x<g2a.length;x++)for(let y=0;y<g2b.length;y++)for(let z=0;z<g2b.length;z++)
-                              yield {g1:[g1[a],g1[b],g1[c],g1[d]],g2a:g2a[x],g2b:[g2b[y],g2b[z]]};
+                              for(let x=0;x<g2a.length;x++)for(let y=0;y<g2b.length;y++)for(let z=0;z<g2b.length;z++) yield {g1:[g1[a],g1[b],g1[c]],g2a:g2a[x],g2b:[g2b[y],g2b[z]]};
+                            } else {
+                              for(let d=0;d<g1.length;d++)for(let x=0;x<g2a.length;x++)for(let y=0;y<g2b.length;y++)for(let z=0;z<g2b.length;z++) yield {g1:[g1[a],g1[b],g1[c],g1[d]],g2a:g2a[x],g2b:[g2b[y],g2b[z]]};
                             }
                           }
                         }
-                        function equipmentKey(e) {
-                          return [e.poisonHit,e.ailment,e.ctPromo,e.instant].join('|');}
-                          function collectUniqueEquipment(count) {
-                            const map=new Map();
-                            for(const slots of enumerateEquipmentSlots(count)) {
-                              const e=equipmentFromSlots(count,slots),key=equipmentKey(e);
-                              if(!map.has(key))map.set(key,e);
-                            }
-                            return [...map.values()];
+                        function equipmentKey(e) { return [e.poisonHit,e.ailment,e.ctPromo,e.instant].join('|'); }
+                        function collectUniqueEquipment(count) {
+                          const map=new Map();
+                          for(const slots of enumerateEquipmentSlots(count)) {
+                            const e=equipmentFromSlots(count,slots),key=equipmentKey(e);
+                            if(!map.has(key))map.set(key,e);
                           }
-                          function basicStrategyCandidates() {
-                            const out=[]; const seen=new Set();
-                            const add=a=>{const k=a.join(',');if(!seen.has(k)) {
-                              seen.add(k);out.push(a);}};
-                              for(let i=1;i<=3;i++)add([i]);
-                              for(let i=1;i<=3;i++)for(let j=1;j<=3;j++)if(i!==j)add([i,j]);
-                              const perms=[[1,2,3],[1,3,2],[2,1,3],[2,3,1],[3,1,2],[3,2,1]];perms.forEach(add);
-                              return out;
-                            }
-                            function chooseBestBasicForEquipment(base,equipment,coarseTrials) {
-                              let best=null;
-                              for(const rotation of basicStrategyCandidates()) {
-                                const r=runSimulation({...base,equipment,rotation,policy:null});
-                                if(!best||r.uptime>best.score)best={rotation,score:r.uptime};
-                              }
-                              return best;
-                            }
-                            async function optimizeJoint() {
-                              const skills=readSkills(); if(skills.length!==3)throw new Error('装備＋スキル使用方法の自動最適化は3スキルを前提にしています。');
-                              const count=+$('equipGroup1Count').value;
-                              $('optimize').disabled=true; $('optimizationResult').textContent='';
-                              try{
+                          return [...map.values()];
+                        }
+                        function basicStrategyCandidates() {
+                          const out=[],seen=new Set(),add=a=>{const k=a.join(',');if(!seen.has(k)){seen.add(k);out.push(a);}};
+                          for(let i=1;i<=3;i++)add([i]);
+                          for(let i=1;i<=3;i++)for(let j=1;j<=3;j++)if(i!==j)add([i,j]);
+                          [[1,2,3],[1,3,2],[2,1,3],[2,3,1],[3,1,2],[3,2,1]].forEach(add);
+                          return out;
+                        }
+                        function policyCandidatesSystematic(baseResist,duration) {
+                          const poisonThresholds=[0,0.5,1,2,3,5,7,9,Math.min(10,Math.max(0,duration))];
+                          const resistThresholds=[25,50,75,100,Math.max(0,baseResist)];
+                          const out=[],seen=new Set();
+                          for(const p of poisonThresholds)for(const r of resistThresholds)for(let urgent=0;urgent<=3;urgent++)for(let highResist=0;highResist<=3;highResist++)for(let defaultAction=0;defaultAction<=3;defaultAction++) {
+                            const key=[p,r,urgent,highResist,defaultAction].join('|');
+                            if(seen.has(key))continue;
+                            seen.add(key);out.push({poisonThreshold:p,resistThreshold:r,urgent,highResist,defaultAction});
+                          }
+                          return out;
+                        }
+                        async function optimizeJoint() {
+                          const skills=readSkills();
+                          if(skills.length!==3) throw new Error('装備＋スキル使用方法の自動最適化は3スキルを前提にしています。');
+                          const count=+$('equipGroup1Count').value;
+                          $('optimize').disabled=true;
+                          $('optimizationResult').textContent='';
+                          const yieldUI=()=>new Promise(resolve=>requestAnimationFrame(()=>resolve()));
+                          const effect=$('specialEffect').value;
+                          const userTrials=Math.max(100,Math.floor(+$('trials').value||10000));
+                          try {
+                            const equipments=collectUniqueEquipment(count);
+                            const strategies=basicStrategyCandidates();
+                            const duration=Number($('duration').value)||600;
 
-                                const equipments=collectUniqueEquipment(count), base=readCfg([1,2,3],1), scored=[];
-                                $('status').textContent=`最適化中… 装備を全列挙 (${equipments.length}種類)`;
-                                for(let i=0;i<equipments.length;i++) {
-                                  const best=chooseBestBasicForEquipment(base,equipments[i],1);
-                                  scored.push({equipment:equipments[i],rotation:best.rotation,score:best.score});
-                                  if(i%10===0||i===equipments.length-1) {
-                                    $('status').textContent=`最適化中… 装備全列挙 ${i+1}/${equipments.length}`;await new Promise(requestAnimationFrame);}
-                                  }
-                                  scored.sort((a,b)=>b.score-a.score);
+                            /*
+                             * Stage 1: equipment screening.
+                             * Do not run every equipment through every strategy for the full
+                             * battle.  First rank equipment with a short, low-noise sample.
+                             * Keep several candidates per strategy so a single lucky result
+                             * cannot eliminate an equipment/rotation pair.
+                             */
+                            const pairs=[];
+                            const equipmentScore=(e)=>{
+                              const poison=Number(e.poisonHit)||0;
+                              const ailment=Number(e.ailment)||0;
+                              const promo=Number(e.ctPromo)||0;
+                              const instant=Number(e.instant)||0;
+                              /* This is only a pre-screen, not the final objective.
+                                 Poison probability is weighted most because it directly
+                                 creates the event we are optimizing; CT effects are
+                                 secondary because they matter only when additional casts
+                                 can actually be converted into poison uptime. */
+                              return poison*1.0+ailment*0.45+promo*0.18+instant*0.12;
+                            };
+                            const selectedEquipMap=new Map();
+                            const addEquipRank=(arr,limit)=>{for(const e of arr.slice(0,limit))selectedEquipMap.set(equipmentKey(e),e);};
+                            addEquipRank(equipments.slice().sort((a,b)=>(b.poisonHit-a.poisonHit)||(b.ailment-a.ailment)),35);
+                            addEquipRank(equipments.slice().sort((a,b)=>(b.ctPromo-a.ctPromo)||(b.instant-a.instant)),35);
+                            addEquipRank(equipments.slice().sort((a,b)=>(b.instant-a.instant)||(b.ctPromo-a.ctPromo)),35);
+                            addEquipRank(equipments.slice().sort((a,b)=>(b.ailment-a.ailment)||(b.poisonHit-a.poisonHit)),35);
+                            addEquipRank(equipments.slice().sort((a,b)=>equipmentScore(b)-equipmentScore(a)),60);
+                            addEquipRank(equipments.slice().sort((a,b)=>(b.poisonHit+b.ailment)-(a.poisonHit+a.ailment)),40);
+                            const heuristicEquipments=[...selectedEquipMap.values()];
+                            const screenDuration=Math.min(duration,20);
+                            const screenTrials=effect==='hpmax'?2:1;
+                            const baseScreen=readCfg([1,2,3],screenTrials);
+                            baseScreen.duration=screenDuration;
+                            if(effect==='hpmax') baseScreen.normalHpm=0;
+                            $('status').textContent=`最適化中… 装備事前選別 ${heuristicEquipments.length}/${equipments.length}`;
+                            await yieldUI();
 
-                                  const equipTop=Math.min(30,scored.length), policyPool=randomPolicyCandidates(80), policyScored=[];
-                                  for(let i=0;i<equipTop;i++) {
-                                    const e=scored[i];
-                                    for(let j=0;j<policyPool.length;j++) {
-                                      const p=policyPool[j],c={...base,equipment:e.equipment,policy:policyFromSpec(p),rotation:e.rotation,seed:400000+i*1000+j};
-                                      const r=runSimulation(c);policyScored.push({equipment:e.equipment,policy:p,rotation:e.rotation,score:r.uptime});
-                                    }
-                                    $('status').textContent=`最適化中… 上位装備の使用方針探索 ${i+1}/${equipTop}`;await new Promise(requestAnimationFrame);
-                                  }
-                                  policyScored.sort((a,b)=>b.score-a.score);
-                                  const finalists=policyScored.slice(0,10);
-                                  const fullTrials=Math.max(100,Math.min(2000,+$('trials').value||10000));
-                                  let best=null;
-                                  for(let i=0;i<finalists.length;i++) {
-                                    const f=finalists[i];$('status').textContent=`最適化中… 最終評価 ${i+1}/${finalists.length}`;await new Promise(requestAnimationFrame);
-                                    const c={...readCfg(f.rotation,fullTrials),equipment:f.equipment,policy:policyFromSpec(f.policy),seed:900000+i*1009};
-                                    const r=runSimulation(c);if(!best||r.uptime>best.result.uptime)best={...f,result:r};
-                                  }
-                                  if(!best)throw new Error('最適化候補がありません。');
-                                  optimizedEquipment=best.equipment;lastResult=best.result;render(best.result);renderEquipmentResult(best.equipment);
-                                  const s=best.equipment.slots,e=best.equipment;
-                                  $('optimizationResult').textContent=`【装備＋スキル使用方法の同時最適化】\nネックレス（${count===4?'エピック':'レジェンダリー'}）\n${s.g1.map((v,i)=>`${i+1}枠：${EQUIP_LABEL[v]}`).join('\n')}\n\nタリスマン\n1枠：${EQUIP_LABEL[s.g2a]}\n2枠：${EQUIP_LABEL[s.g2b[0]]}\n3枠：${EQUIP_LABEL[s.g2b[1]]}\n\n合計\nアドバンススキルヒット時毒付与：+${e.poisonHit.toFixed(1)}%\n状態異常付与確率アップ：+${e.ailment.toFixed(1)}%\nアドバンススキルクールダウン促進：+${e.ctPromo.toFixed(1)}%\nアドバンススキル即時クールダウン：+${e.instant.toFixed(1)}%\n\n${policyText(best.policy)}\n最終評価 毒維持率：${(best.result.uptime*100).toFixed(3)}%\n\n※装備は全組み合わせを列挙し、同一集計値は統合しています。上位装備についてスキル使用方針を探索し、最終候補を精密評価しています。`;
-                                  $('status').textContent='最適化完了';
-                                }finally{$('optimize').disabled=false;}
+                            for(let i=0;i<heuristicEquipments.length;i++) {
+                              const e=heuristicEquipments[i];
+                              /* Screen the full basic strategy set only for the most
+                                 promising equipment.  This keeps the search broad while
+                                 avoiding thousands of expensive simulations. */
+                              for(let j=0;j<strategies.length;j++) {
+                                const rotation=strategies[j];
+                                const r=runSimulation({...baseScreen,equipment:e,rotation,policy:null,seed:123456789+i*1000+j});
+                                pairs.push({equipment:e,rotation,score:r.uptime});
                               }
+                              if(i%3===0||i===heuristicEquipments.length-1) {
+                                $('status').textContent=`最適化中… 装備×ローテーション ${i+1}/${heuristicEquipments.length}`;
+                                await yieldUI();
+                              }
+                            }
+
+                            /* Keep the best few pairs globally AND the best few for each
+                               rotation. This is safer than selecting only one rotation per
+                               equipment. */
+                            pairs.sort((a,b)=>b.score-a.score);
+                            const keepGlobal=Math.min(40,pairs.length);
+                            const keepPerRotation=4;
+                            const selectedMap=new Map();
+                            for(const x of pairs.slice(0,keepGlobal)) selectedMap.set(equipmentKey(x.equipment)+'|'+x.rotation.join(','),x);
+                            for(const rotation of strategies) {
+                              const own=pairs.filter(x=>x.rotation.join(',')===rotation.join(',')).slice(0,keepPerRotation);
+                              for(const x of own) selectedMap.set(equipmentKey(x.equipment)+'|'+x.rotation.join(','),x);
+                            }
+                            const selected=[...selectedMap.values()];
+
+                            /* Stage 2: systematic policy search, but only around the
+                               genuinely promising equipment/rotation pairs.  The old
+                               algorithm evaluated 2,880 policies × 10 equipments × 3
+                               rotations.  Here we use structured policy families and a
+                               short screen before any full evaluation. */
+                            const poisonThresholds=[0.5,1,2,3,5,7,9];
+                            const baseResist=Number($('baseResist').value)||0;
+                            const resistThresholds=[baseResist,25,50,75,100].filter((v,i,a)=>a.indexOf(v)===i);
+                            const actions=[0,1,2,3];
+                            const policyCandidates=[];
+                            const seenPolicy=new Set();
+                            const addPolicy=(p)=>{const k=[p.poisonThreshold,p.resistThreshold,p.urgent,p.highResist,p.defaultAction].join('|');if(!seenPolicy.has(k)){seenPolicy.add(k);policyCandidates.push(p);}};
+
+                            /* Deterministic policy families.  For every threshold pair,
+                               evaluate four uniform policies plus four AS1-priority and
+                               four AS2/AS3-priority variants.  This gives complete
+                               threshold coverage without the old 2,880-policy explosion. */
+                            for(const p of poisonThresholds) for(const r of resistThresholds) {
+                              for(const action of actions) {
+                                addPolicy({poisonThreshold:p,resistThreshold:r,urgent:action,highResist:action,defaultAction:action});
+                              }
+                              for(const fallback of [0,1,2,3]) {
+                                addPolicy({poisonThreshold:p,resistThreshold:r,urgent:1,highResist:fallback,defaultAction:fallback});
+                              }
+                              for(const urgent of [2,3]) {
+                                addPolicy({poisonThreshold:p,resistThreshold:r,urgent,highResist:urgent,defaultAction:urgent});
+                              }
+                            }
+
+                            const policyScreenTrials=effect==='hpmax'?1:1;
+                            const policyDuration=Math.min(duration,30);
+                            const policyScored=[];
+                            const pairLimit=Math.min(16,selected.length);
+                            const policyLimit=policyCandidates.length;
+                            $('status').textContent=`最適化中… 条件分岐候補を${pairLimit}組×${policyLimit}候補で短時間評価`;
+                            let work=0;
+                            for(let i=0;i<pairLimit;i++) {
+                              const e=selected[i];
+                              for(let j=0;j<policyLimit;j++) {
+                                const p=policyCandidates[j];
+                                const c={...baseScreen,equipment:e.equipment,rotation:e.rotation,policy:policyFromSpec(p),trials:policyScreenTrials,duration:policyDuration,seed:500000+i*10000+j};
+                                if(effect==='hpmax') c.normalHpm=0;
+                                const r=runSimulation(c);
+                                policyScored.push({equipment:e.equipment,rotation:e.rotation,policy:p,score:r.uptime});
+                                if(++work%12===0) await yieldUI();
+                              }
+                              $('status').textContent=`最適化中… 条件分岐スクリーニング ${i+1}/${pairLimit}`;
+                            }
+                            policyScored.sort((a,b)=>b.score-a.score);
+
+                            /* Stage 3: full-ish evaluation.  Only a small number of
+                               finalists are expensive.  The optimizer's trial count is
+                               deliberately capped; the normal Run Simulation button can
+                               still be used for a high-precision final measurement. */
+                            const finalists=[];
+                            const finalSeen=new Set();
+                            for(const x of policyScored) {
+                              const key=equipmentKey(x.equipment)+'|'+x.rotation.join(',')+'|'+[x.policy.poisonThreshold,x.policy.resistThreshold,x.policy.urgent,x.policy.highResist,x.policy.defaultAction].join(',');
+                              if(!finalSeen.has(key)) {finalSeen.add(key);finalists.push(x);}
+                              if(finalists.length>=30) break;
+                            }
+                            /* Always include fixed-rotation controls, with at least one
+                               representative for every rotation family. */
+                            const fixedByRotation=new Map();
+                            for(const x of pairs) {
+                              const key=x.rotation.join(',');
+                              if(!fixedByRotation.has(key)) fixedByRotation.set(key,x);
+                            }
+                            for(const x of fixedByRotation.values()) {
+                              const key=equipmentKey(x.equipment)+'|'+x.rotation.join(',')+'|FIXED';
+                              if(!finalSeen.has(key)) {finalSeen.add(key);finalists.push({equipment:x.equipment,rotation:x.rotation,policy:null,score:x.score,fixed:true});}
+                            }
+                            const preliminaryTrials=Math.min(20,Math.max(5,Math.floor(userTrials/100)));
+                            const preliminary=[];
+                            for(let i=0;i<finalists.length;i++) {
+                              const f=finalists[i];
+                              $('status').textContent=`最適化中… 候補比較 ${i+1}/${finalists.length}（${preliminaryTrials}試行）`;
+                              await yieldUI();
+                              const c={...readCfg(f.rotation,preliminaryTrials),equipment:f.equipment,seed:900000000};
+                              c.policy=f.policy?policyFromSpec(f.policy):null;
+                              if(effect==='hpmax') c.normalHpm=0;
+                              const r=runSimulation(c);
+                              preliminary.push({...f,result:r,score:r.uptime});
+                            }
+                            preliminary.sort((a,b)=>b.score-a.score);
+                            const distinctPreliminary=new Map();
+                            for(const x of preliminary) {
+                              const key=equipmentKey(x.equipment);
+                              if(!distinctPreliminary.has(key)) distinctPreliminary.set(key,x);
+                            }
+                            const finalShortlist=[...distinctPreliminary.values()].slice(0,5);
+                            const finalTrials=Math.min(100,Math.max(50,Math.floor(userTrials/50)));
+                            const finalEvaluated=[];
+                            for(let i=0;i<finalShortlist.length;i++) {
+                              const f=finalShortlist[i];
+                              $('status').textContent=`最適化中… 最終評価 ${i+1}/${finalShortlist.length}（${finalTrials}試行）`;
+                              await yieldUI();
+                              const c={...readCfg(f.rotation,finalTrials),equipment:f.equipment,seed:900000000};
+                              c.policy=f.policy?policyFromSpec(f.policy):null;
+                              if(effect==='hpmax') c.normalHpm=0;
+                              const r=runSimulation(c);
+                              finalEvaluated.push({...f,result:r,score:r.uptime});
+                            }
+                            finalEvaluated.sort((a,b)=>b.score-a.score);
+                            const distinctFinal=new Map();
+                            for(const x of finalEvaluated) {
+                              const key=equipmentKey(x.equipment);
+                              const prev=distinctFinal.get(key);
+                              if(!prev || x.score>prev.score) distinctFinal.set(key,x);
+                            }
+                            const rankedFinal=[...distinctFinal.values()].sort((a,b)=>b.score-a.score).slice(0,5);
+                            const best=rankedFinal[0];                            if(!best) throw new Error('最適化候補がありません。');
+
+                            optimizedEquipment=best.equipment;
+                            lastResult=best.result;
+                            render(best.result);
+                            renderEquipmentResult(best.equipment);
+                            $('rotation').value=best.rotation.join(',');
+
+                            const s=best.equipment.slots,e=best.equipment;
+                            const bestPolicy=best.policy||null;
+                            const policyOutput=bestPolicy?policyText(bestPolicy):'固定ローテーション（条件分岐なし）';
+                            const rankText=rankedFinal.map((x,i)=>{
+                              const p=x.policy;
+                              const pol=p?`P≤${p.poisonThreshold}s / R≥${p.resistThreshold}% → [${actionLabel(p.urgent)}, ${actionLabel(p.highResist)}, ${actionLabel(p.defaultAction)}]`:'固定ローテーション';
+                              const e=x.equipment;
+                              const equipSummary=`毒+${e.poisonHit.toFixed(1)}% / 状態異常+${e.ailment.toFixed(1)}% / CT促進+${e.ctPromo.toFixed(1)}% / 即時CT+${e.instant.toFixed(1)}%`;
+                              return `${i+1}. ${x.rotation.join(' → ')} / ${pol} / ${equipSummary} : ${(x.score*100).toFixed(3)}%`;
+                            }).join('\n');
+                            $('optimizationResult').textContent=`【装備＋スキル使用方法の同時最適化】
+ネックレス（${count===4?'エピック':'レジェンダリー'}）
+${s.g1.map((v,i)=>`${i+1}枠：${EQUIP_LABEL[v]}`).join('\n')}
+
+タリスマン
+1枠：${EQUIP_LABEL[s.g2a]}
+2枠：${EQUIP_LABEL[s.g2b[0]]}
+3枠：${EQUIP_LABEL[s.g2b[1]]}
+
+合計
+アドバンススキルヒット時毒付与：+${e.poisonHit.toFixed(1)}%
+状態異常付与確率アップ：+${e.ailment.toFixed(1)}%
+アドバンススキルクールダウン促進：+${e.ctPromo.toFixed(1)}%
+アドバンススキル即時クールダウン：+${e.instant.toFixed(1)}%
+
+【スキル使用方針】
+${policyOutput}
+${best.policy?'フォールバックローテーション：':''}${best.rotation.join(' → ')}
+
+最終評価 毒維持率：${(best.result.uptime*100).toFixed(3)}%
+（最適化内部評価：予備評価${preliminaryTrials}試行 → 上位5候補を${finalTrials}試行。高精度の最終確認は通常シミュレーションで実行してください。）
+
+最終候補ランキング（上位5件）：
+${rankText}
+
+※装備は全組み合わせを集計値で統合します。短時間スクリーニングで装備×ローテーション候補を選別し、固定ローテーションと条件分岐型を同じ目的関数で比較した上で、条件分岐を系統的に探索します。最終候補だけを多試行評価するため、従来方式より大幅に計算量を削減しています。`;
+                            $('status').textContent='最適化完了';
+                          } finally {
+                            $('optimize').disabled=false;
+                          }
+                        }
+
                               function optimize() {
                                 return optimizeJoint(); }
                                 $('specialEffect').onchange=refreshCritUI; refreshCritUI();
