@@ -336,7 +336,8 @@ async function optimizeJoint(){
     // without changing the search space or random seeds. Each worker receives the
     // immutable skill/policy tables once, then processes whole equipment states.
     try{
-      const wc=Math.max(1,Math.min(8,(navigator.hardwareConcurrency||2)-1));
+      const isMobile=/Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent||'');
+      const wc=isMobile?1:Math.max(1,Math.min(8,(navigator.hardwareConcurrency||2)-1));
       for(let i=0;i<wc;i++)optWorkerPool.push({w:new Worker('src/optimizer-worker.js')});
     }catch(e){}
     const initWorkers=async()=>{
@@ -521,7 +522,8 @@ async function optimizeJoint(){
     // Final evaluation is the most expensive phase. Candidates are independent
     // simulations, so Web Workers reduce wall-clock time without changing the
     // simulation model or random seeds. Keep a small worker count for browsers.
-    const workerCount=Math.max(1,Math.min(4,(navigator.hardwareConcurrency||2)-1,finalBeam.length));
+    const isMobileFinal=/Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent||'');
+    const workerCount=isMobileFinal?1:Math.max(1,Math.min(4,(navigator.hardwareConcurrency||2)-1,finalBeam.length));
     const workerPool=[];
     try{
       for(let i=0;i<workerCount;i++) workerPool.push({w:new Worker('src/optimizer-worker.js')});

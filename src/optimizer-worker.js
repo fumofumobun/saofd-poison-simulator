@@ -122,7 +122,10 @@ self.onmessage=async function(ev){const d=ev.data||{};try{
   const push=i=>{if(i>=0&&i<count&&!seen.has(i)){seen.add(i);indices.push(i);}};
   // Always include the first/last policy and boundaries of each metadata block.
   push(0);push(count-1);
-  for(const b of shared.policyMeta.blocks){push(b.start);push(b.start+b.rs.length-1);}
+  // buildPolicyMeta stores the complete flat policy list; it does not expose
+  // block metadata. Keep the screen independent of optional block data so
+  // mobile/desktop workers use the same deterministic policy set.
+  push(0);push(count-1);
   // Then fill the remaining budget by a deterministic uniform stride.
   const stride=Math.max(1,Math.ceil(count/Math.max(1,budget-indices.length)));
   for(let i=0;i<count&&indices.length<budget;i+=stride)push(i);
