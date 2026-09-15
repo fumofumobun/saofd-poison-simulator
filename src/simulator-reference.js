@@ -9,33 +9,8 @@ function clamp(x,a,b) {
     return function() {
       let t=seed+=0x6D2B79F5;t=Math.imul(t^t>>>15,t|1);t^=t+Math.imul(t^t>>>7,t|61);return ((t^t>>>14)>>>0)/4294967296;};}
 
-      const __skillDataCache = new Map();
-      function __compileSkillData(skills) {
-        const key = JSON.stringify(skills || []);
-        const cached = __skillDataCache.get(key);
-        if(cached) return cached;
-        const compiled=(skills||[]).map(s=>{
-          const hits=Math.max(0,Math.floor(Number(s.hits)||0));
-          const partialFlags=new Uint8Array(hits);
-          for(const token of String(s.partialHits||'').split(',')){
-            const h=parseInt(token.trim(),10)-1;
-            if(h>=0 && h<hits) partialFlags[h]=1;
-          }
-          return {
-            type:s.type,ct:Math.max(0,Number(s.ct)||0),execution:Math.max(0,Number(s.execution)||0),
-            hits,interval:Math.max(0,Number(s.interval)||0),
-            rangedRate:Number(s.rangedRate)||0,poisonType:s.poisonType,partialChance:Number(s.partialChance)||0,partialFlags
-          };
-        });
-        __skillDataCache.set(key,compiled);
-        if(__skillDataCache.size>8){ const first=__skillDataCache.keys().next().value; __skillDataCache.delete(first); }
-        return compiled;
-      }
-
-      function runSimulation(cfg) {
-        const fastMode=cfg.__fast===true;
+      function runSimulationReference(cfg) {
         const trials=Math.max(1,Math.floor(cfg.trials));
-        const trialStart=Math.max(0,Math.floor(cfg.trialStart||0));
         const duration=Math.max(0,Number(cfg.duration)||0);
         const critEnabled=(cfg.specialEffect||'crit')==='crit';
         const critRate=critEnabled?clamp(Number(cfg.critRate)||0,0,100)/100:0;
@@ -49,18 +24,13 @@ function clamp(x,a,b) {
         // Precompute immutable skill data once per simulation. Optimizer calls the
         // simulator thousands of times, so rebuilding these objects/sets per trial
         // is pure overhead and does not improve statistical fidelity.
-        const skillData=__compileSkillData(cfg.skills);
-        // Precompute all hit-independent poison/skill values once per simulation.
-        // These values are immutable during a trial; calculating them inside every
-        // hit was a significant hot-loop cost.
-        const equipAilment=Number(equipment.ailment)||0;
-        const equipPoison=Number(equipment.poisonHit)||0;
-        const ordinaryPoisonChance=equipPoison>0 ? equipPoison+equipAilment : 0;
-        const hitData=skillData.map(s=>{
-          const special=s.type==='special';
-          if(special) return {special:true,hits:1,interval:0,rangedRate:s.rangedRate,poisonCount:2,p1:100,s1:true,p2:ordinaryPoisonChance,s2:false};
-          if(s.poisonType==='partial') return {special:false,hits:s.hits,interval:s.interval,rangedRate:s.rangedRate,poisonCount:2,p1:ordinaryPoisonChance,s1:false,p2:s.partialChance+equipAilment,s2:false,partialFlags:s.partialFlags};
-          return {special:false,hits:s.hits,interval:s.interval,rangedRate:s.rangedRate,poisonCount:1,p1:ordinaryPoisonChance,s1:false,p2:0,s2:false,partialFlags:null};
+        const skillData=(cfg.skills||[]).map(s=>{
+          const partialHitSet=new Set(String(s.partialHits||'').split(',').map(x=>parseInt(x.trim(),10)).filter(Number.isFinite).map(x=>x-1));
+          return {
+            type:s.type,ct:Math.max(0,Number(s.ct)||0),execution:Math.max(0,Number(s.execution)||0),
+            hits:Math.max(0,Math.floor(Number(s.hits)||0)),interval:Math.max(0,Number(s.interval)||0),
+            rangedRate:Number(s.rangedRate)||0,poisonType:s.poisonType,partialChance:Number(s.partialChance)||0,partialHitSet
+          };
         });
         // Compile policy/rotation once per simulation call. The optimizer invokes
         // this function many times; rebuilding these small arrays at every hit
@@ -73,33 +43,17 @@ function clamp(x,a,b) {
           defaultAction: Number(cfg.policy.defaultAction ?? 0)
         } : null;
         const compiledRotation = (cfg.rotation||[]).filter(n=>Number.isInteger(n)&&n>=1&&n<=skillData.length).map(n=>n-1);
-        const defaultOrder=new Int8Array(skillData.length);
-        for(let di=0;di<skillData.length;di++)defaultOrder[di]=di;
         let uptimeSum=0, attempts=0, successes=0, maxRes=0, totalHits=0;
         let totalPoisonAttempts=0,totalPoisonSuccesses=0,totalCrits=0,totalNormalHits=0,totalSkillActivations=0,totalRangedHits=0,totalMeleeHits=0,totalMeleeCrits=0,totalRangedCrits=0;
         const timeline=[];
-        // Reuse per-trial typed arrays instead of allocating three Float64Arrays
-        // for every Monte-Carlo trial. This is semantics-preserving and targets
-        // one of the hottest allocation paths in long final evaluations.
-        const ready=new Float64Array(skillData.length);
-        const cooldownReduction=new Float64Array(skillData.length);
-        const cooldownStart=new Float64Array(skillData.length);
-        const baseResist=Number(cfg.baseResist)||0;
-        const rise=Number(cfg.rise)||0;
-        const fall=Number(cfg.fall)||0;
-        const ailmentDuration=Number(cfg.ailmentDuration)||0;
-        const equipmentCtPromo=Number(equipment.ctPromo)||0;
-        const equipmentInstant=Number(equipment.instant)||0;
 
-        for(let n=trialStart;n<trialStart+trials;n++) {
+        for(let n=0;n<trials;n++) {
           const rng=mulberry32(((cfg.seed||1234567)+n*1000003)>>>0);
           const skills=skillData;
-          const skillCount=skills.length;
-          // Arrays are reused across trials; reset only the active prefix.
-          ready.fill(0);
-          cooldownReduction.fill(0);
-          cooldownStart.fill(0);
-          let t=0,busyUntil=0,poisonUntil=-Infinity,resist=baseResist,peakRes=resist,u=0,comboHits=0;
+          const ready=skills.map(()=>0);
+          const cooldownReduction=skills.map(()=>0);
+          const cooldownStart=skills.map(()=>0);
+          let t=0,busyUntil=0,poisonUntil=-Infinity,resist=Number(cfg.baseResist)||0,peakRes=resist,u=0,comboHits=0;
           let hpMaxActive = specialEffect==='hpmax' ? (rng()<hpMaxUptime) : false;
           let lastHpCheck = 0;
           let nextNormal=normalHz>0?0:Infinity;
@@ -114,7 +68,7 @@ function clamp(x,a,b) {
             }
           }
           function currentPromo() {
-            return ((equipmentCtPromo)+(specialEffect==='hpmax'&&hpMaxActive?20:0))/100;
+            return ((Number(equipment.ctPromo)||0)+(specialEffect==='hpmax'&&hpMaxActive?20:0))/100;
           }
           function shortenOneRandomCooldown(isRanged) {
             const perCritReduction=isRanged?0.01:0.03;
@@ -129,53 +83,51 @@ function clamp(x,a,b) {
               const promo=currentPromo();
               ready[j]=Math.max(t,cooldownStart[j]+(baseCt*(1-cooldownReduction[j]))/(1+promo));
             }
-            if(!fastMode)totalCrits++;
+            totalCrits++;
           }
           function poisonAttempt(chance,special=false) {
             const numericChance=Number(chance);
             if(!special && !(numericChance>0)) return false;
-            if(!fastMode){attempts++; totalPoisonAttempts++;}
+            attempts++; totalPoisonAttempts++;
             const p=special?(1/3):chanceFromResist(numericChance,resist,'subtract');
             if(rng()<p) {
-              if(!fastMode){successes++; totalPoisonSuccesses++;}
+              successes++; totalPoisonSuccesses++;
               if(!special) {
-                resist+=rise;peakRes=Math.max(peakRes,resist);}
-                if(ailmentDuration>0) {
+                resist+=Number(cfg.rise)||0;peakRes=Math.max(peakRes,resist);}
+                if(Number(cfg.ailmentDuration)>0) {
                   const end=Math.min(duration,t+Number(cfg.ailmentDuration));
                   if(end>t) {
                     if(t>=poisonUntil)u+=end-t; else if(end>poisonUntil)u+=end-poisonUntil; poisonUntil=Math.max(poisonUntil,end); }
                   }
                 } else if(!special) {
-                  resist=Math.max(baseResist, resist-(fall));
+                  const baseResist = Number(cfg.baseResist)||0;
+                  resist=Math.max(baseResist, resist-(Number(cfg.fall)||0));
                 }
               }
-              function processHit(rangedRate,poisonCount,p1,s1,p2,s2) {
-                if(!fastMode)totalHits++;
-                const isRanged=critEnabled && rng()<clamp(Number(rangedRate ?? 0),0,100)/100;
+              function processHit(ev) {
+                totalHits++;
+                const isRanged=critEnabled && rng()<clamp(Number(ev.rangedRate ?? 0),0,100)/100;
                 if(critEnabled) {
-                  if(isRanged){if(!fastMode)totalRangedHits++;}else{if(!fastMode)totalMeleeHits++;}
+                  if(isRanged)totalRangedHits++;else totalMeleeHits++;
                   if(rng()<critRate) {
-                    if(isRanged){if(!fastMode)totalRangedCrits++;}else{if(!fastMode)totalMeleeCrits++;}
-                    shortenOneRandomCooldown(isRanged);
+                    if(isRanged)totalRangedCrits++;else totalMeleeCrits++;shortenOneRandomCooldown(isRanged);}
                   }
-                }
-                if(specialEffect==='combo') {
-                  if(comboHits===0) comboHits=1;
-                  else if(rng()<comboSuccessRate) comboHits++;
-                  else comboHits=1;
-                  if(comboHits>=70) {
-                    let candidateCount=0;
-                    for(let j=0;j<skillCount;j++) if(ready[j]>t+1e-12) candidateCount++;
-                    if(candidateCount) {
-                      let pick=Math.floor(rng()*candidateCount);
-                      for(let j=0;j<skillCount;j++) if(ready[j]>t+1e-12 && pick--===0){ready[j]=t;break;}
+
+                  if(specialEffect==='combo') {
+                    if(comboHits===0) comboHits=1;
+                    else if(rng()<comboSuccessRate) comboHits++;
+                    else comboHits=1;
+                    if(comboHits>=70) {
+                      const candidates=[];
+                      for(let j=0;j<ready.length;j++) if(ready[j]>t+1e-12) candidates.push(j);
+                      if(candidates.length) {
+                        ready[candidates[Math.floor(rng()*candidates.length)]]=t; }
+                        comboHits=0;
+                      }
                     }
-                    comboHits=0;
-                  }
-                }
-                if(poisonCount>0) poisonAttempt(p1,s1);
-                if(poisonCount>1) poisonAttempt(p2,s2);
-              }
+                    if(ev.poisons) {
+                      for(const poison of ev.poisons) poisonAttempt(poison.chance,poison.special); } else if(ev.poison)poisonAttempt(ev.poison.chance,ev.poison.special);
+                    }
                     function policyPick() {
                       if(typeof cfg.policy==='function') return cfg.policy({t,poisonRemaining:Math.max(0,poisonUntil-t),resist,ready:ready.map(x=>x<=t+1e-9),skills});
                       if(compiledPolicy) {
@@ -194,7 +146,7 @@ function clamp(x,a,b) {
                         const preferred=action-1;
                         if(preferred>=0 && preferred<skills.length && ready[preferred]<=t+1e-9)return preferred;
 
-                        const order=compiledRotation.length?compiledRotation:defaultOrder;
+                        const order=compiledRotation.length?compiledRotation:skills.map((_,i)=>i);
                         for(const i of order)if(ready[i]<=t+1e-9)return i;
                         return -1;
                       }
@@ -225,7 +177,7 @@ function clamp(x,a,b) {
                                   updateHpMaxState(t);
 
                                   if(nextNormal<=t+1e-9 && nextNormal<=duration+1e-9 && nextNormal<=nextSkill+1e-9) {
-                                    if(!fastMode)totalNormalHits++;processHit(0,0,0,false,0,false);nextNormal+=1/normalHz;continue;
+                                    totalNormalHits++;processHit({poison:null,normal:true});nextNormal+=1/normalHz;continue;
                                   }
                                   if(t<busyUntil-1e-9) {
                                     continue;}
@@ -240,38 +192,41 @@ function clamp(x,a,b) {
 
                                         const actionDuration=Math.max(execution,1/60);
 
-                                        const instant=clamp((Number(s.instant)||0)+(equipmentInstant),0,100);
+                                        const instant=clamp((Number(s.instant)||0)+(Number(equipment.instant)||0),0,100);
                                         cooldownReduction[idx]=0;cooldownStart[idx]=start;
                                         const promo=currentPromo();
                                         ready[idx]=start+(rng()*100<instant?0:(ct/(1+promo)));
-                                        busyUntil=start+actionDuration;if(!fastMode)totalSkillActivations++;
-                                        const hd=hitData[idx],hits=hd.hits,interval=hd.interval;
+                                        busyUntil=start+actionDuration;totalSkillActivations++;
+                                        const isSpecial=s.type==='special',hits=isSpecial?1:Math.max(0,Math.floor(Number(s.hits)||0)),interval=isSpecial?0:Math.max(0,Number(s.interval)||0);
                                         for(let h=0;h<hits;h++) {
                                           const ht=start+h*interval;if(ht>duration+1e-9||ht>busyUntil+1e-9)break;
-                                          let poisonCount=hd.poisonCount,p1=hd.p1,s1=hd.s1,p2=hd.p2,s2=hd.s2;
-                                          if(hd.partialFlags && hd.partialFlags[h]!==1){poisonCount=1;p2=0;s2=false;}
+                                          const poisons=[];
+
+                                          const asPoisonBaseChance=Number(equipment.poisonHit)||0;
+                    const asPoisonChance=asPoisonBaseChance>0
+                      ? asPoisonBaseChance+(Number(equipment.ailment)||0)
+                      : 0;
+                                          if(isSpecial) {
+                                            poisons.push({chance:100,special:true});
+                                            poisons.push({chance:asPoisonChance,special:false});
+                                          }else{
+
+                                            poisons.push({chance:asPoisonChance,special:false});
+
+                                            if(s.poisonType==='partial'&&s.partialHitSet.has(h)) {
+                                              poisons.push({chance:s.partialChance+(Number(equipment.ailment)||0),special:false});
+                                            }
+                                          }
 
                                           while(nextNormal<=ht+1e-9&&nextNormal<busyUntil+1e-9&&nextNormal<=duration+1e-9) {
-                                            t=nextNormal;if(!fastMode)totalNormalHits++;processHit(normalRangedRate,0,0,false,0,false);nextNormal+=1/normalHz;
+                                            t=nextNormal;totalNormalHits++;processHit({poisons:[],normal:true,rangedRate:normalRangedRate});nextNormal+=1/normalHz;}
+                                            t=ht;processHit({poisons,rangedRate:Number(s.rangedRate)||0});
                                           }
-                                          t=ht;processHit(Number(s.rangedRate)||0,poisonCount,p1,s1,p2,s2);
                                           t=busyUntil;
                                           if(execution<=1e-9)t=busyUntil;
                                         }
-                                        }
                                         uptimeSum+=duration>0?clamp(u/duration,0,1):0;maxRes=Math.max(maxRes,peakRes);
-                                        if(!fastMode && n<trialStart+20)timeline.push({trial:n+1,uptime:duration>0?clamp(u/duration,0,1):0});
+                                        if(n<20)timeline.push({trial:n+1,uptime:duration>0?clamp(u/duration,0,1):0});
                                       }
-                                      if(fastMode)return {uptime:uptimeSum/trials};
                                       return {uptime:uptimeSum/trials,attempts:attempts/trials,successes:successes/trials,successRate:attempts?successes/attempts:0,maxRes,timeline,hits:totalHits/trials,poisonAttempts:totalPoisonAttempts/trials,poisonSuccesses:totalPoisonSuccesses/trials,crits:critEnabled?totalCrits/trials:0,meleeHits:critEnabled?totalMeleeHits/trials:0,rangedHits:critEnabled?totalRangedHits/trials:0,meleeCrits:critEnabled?totalMeleeCrits/trials:0,rangedCrits:critEnabled?totalRangedCrits/trials:0,normalHits:totalNormalHits/trials,skillActivations:totalSkillActivations/trials};
                                     }
-
-// Optimizer-only hot path. This deliberately returns only uptime, because the
-// optimizer never consumes the diagnostic counters from runSimulation(). The
-// state machine and RNG sequence mirror runSimulation() above.
-function runSimulationFast(cfg) {
-  // Exact optimizer path: reuse the battle state machine with diagnostics disabled.
-  // This deliberately shares every timing/RNG/crit branch with runSimulation(),
-  // so the fast path cannot silently diverge from the reference model.
-  return runSimulation({...cfg,__fast:true});
-}
