@@ -359,7 +359,7 @@ function esc(v) {
                               const key=equipmentKey(x.equipment);
                               if(!distinctPreliminary.has(key)) distinctPreliminary.set(key,x);
                             }
-                            const finalShortlist=[...distinctPreliminary.values()].slice(0,5);
+                            const finalShortlist=[...distinctPreliminary.values()].slice(0,10);
                             const finalTrials=Math.min(100,Math.max(50,Math.floor(userTrials/50)));
                             const finalEvaluated=[];
                             for(let i=0;i<finalShortlist.length;i++) {
@@ -379,7 +379,7 @@ function esc(v) {
                               const prev=distinctFinal.get(key);
                               if(!prev || x.score>prev.score) distinctFinal.set(key,x);
                             }
-                            const rankedFinal=[...distinctFinal.values()].sort((a,b)=>b.score-a.score).slice(0,5);
+                            const rankedFinal=[...distinctFinal.values()].sort((a,b)=>b.score-a.score).slice(0,10);
                             const best=rankedFinal[0];                            if(!best) throw new Error('最適化候補がありません。');
 
                             optimizedEquipment=best.equipment;
@@ -418,9 +418,9 @@ ${policyOutput}
 ${best.policy?'フォールバックローテーション：':''}${best.rotation.join(' → ')}
 
 最終評価 毒維持率：${(best.result.uptime*100).toFixed(3)}%
-（最適化内部評価：予備評価${preliminaryTrials}試行 → 上位5候補を${finalTrials}試行。高精度の最終確認は通常シミュレーションで実行してください。）
+（最適化内部評価：予備評価${preliminaryTrials}試行 → 上位10候補を${finalTrials}試行。高精度の最終確認は通常シミュレーションで実行してください。）
 
-最終候補ランキング（上位5件）：
+最終候補ランキング（上位10件）：
 ${rankText}
 
 ※装備は全組み合わせを集計値で統合します。短時間スクリーニングで装備×ローテーション候補を選別し、固定ローテーションと条件分岐型を同じ目的関数で比較した上で、条件分岐を系統的に探索します。最終候補だけを多試行評価するため、従来方式より大幅に計算量を削減しています。`;
