@@ -41,9 +41,9 @@ async function verifyWasmForEffect(effect){
     {...b,duration:2.25,trials:9,seed:0x10203040,equipment:{poisonHit:13,ailment:7,ctPromo:12,instant:22}},
     {...b,duration:19,trials:6,seed:0x55667788,rotation:[1,3,2],equipment:{poisonHit:100,ailment:25,ctPromo:0,instant:0}}
   ];
-  // Do not enable known-problematic custom implementations. This is a
-  // correctness gate, not a performance heuristic.
-  if(effect!=='hpmax') return false;
+  // Correctness gate: enable an effect only when the WASM implementation
+  // matches the reference simulator across the deterministic test suite.
+  // This is intentionally an exactness check, not a performance heuristic.
   try{
     // Each case is isolated because the WASM batch ABI shares scalar settings
     // from candidate 0.  Also compare a deterministic family of cases rather

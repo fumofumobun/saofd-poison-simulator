@@ -337,7 +337,11 @@ async function optimizeJoint(){
     // immutable skill/policy tables once, then processes whole equipment states.
     try{
       const isMobile=/Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent||'');
-      const wc=isMobile?1:Math.max(1,Math.min(8,(navigator.hardwareConcurrency||2)-1));
+      const hc=Math.max(1,navigator.hardwareConcurrency||2);
+      // Parallelism changes wall-clock time only; every candidate keeps the same
+      // seed/trial count, so statistical and model accuracy are unchanged.
+      // Keep mobile conservative to avoid thermal/memory pressure.
+      const wc=isMobile?Math.max(1,Math.min(2,hc-1)):Math.max(1,Math.min(8,hc-1));
       for(let i=0;i<wc;i++)optWorkerPool.push({w:new Worker('src/optimizer-worker.js')});
     }catch(e){}
     const initWorkers=async()=>{
