@@ -21,13 +21,35 @@ function clamp(x,a,b) {
         const hpMaxUptime=clamp(Number(cfg.hpMaxUptime ?? 100)||0,0,100)/100;
         const specialEffect=cfg.specialEffect||'crit';
         const equipment=cfg.equipment||{poisonHit:0,ailment:0,ctPromo:0,instant:0};
+        // Precompute immutable skill data once per simulation. Optimizer calls the
+        // simulator thousands of times, so rebuilding these objects/sets per trial
+        // is pure overhead and does not improve statistical fidelity.
+        const skillData=(cfg.skills||[]).map(s=>{
+          const partialHitSet=new Set(String(s.partialHits||'').split(',').map(x=>parseInt(x.trim(),10)).filter(Number.isFinite).map(x=>x-1));
+          return {
+            type:s.type,ct:Math.max(0,Number(s.ct)||0),execution:Math.max(0,Number(s.execution)||0),
+            hits:Math.max(0,Math.floor(Number(s.hits)||0)),interval:Math.max(0,Number(s.interval)||0),
+            rangedRate:Number(s.rangedRate)||0,poisonType:s.poisonType,partialChance:Number(s.partialChance)||0,partialHitSet
+          };
+        });
+        // Compile policy/rotation once per simulation call. The optimizer invokes
+        // this function many times; rebuilding these small arrays at every hit
+        // was unnecessary interpreter/JIT work and did not change the model.
+        const compiledPolicy = cfg.policy && cfg.policy.rules ? {
+          poisonThreshold: Number(cfg.policy.rules[0]?.value ?? Infinity),
+          urgent: Number(cfg.policy.rules[0]?.action ?? 0),
+          resistThreshold: Number(cfg.policy.rules[1]?.value ?? Infinity),
+          highResist: Number(cfg.policy.rules[1]?.action ?? 0),
+          defaultAction: Number(cfg.policy.defaultAction ?? 0)
+        } : null;
+        const compiledRotation = (cfg.rotation||[]).filter(n=>Number.isInteger(n)&&n>=1&&n<=skillData.length).map(n=>n-1);
         let uptimeSum=0, attempts=0, successes=0, maxRes=0, totalHits=0;
         let totalPoisonAttempts=0,totalPoisonSuccesses=0,totalCrits=0,totalNormalHits=0,totalSkillActivations=0,totalRangedHits=0,totalMeleeHits=0,totalMeleeCrits=0,totalRangedCrits=0;
         const timeline=[];
 
         for(let n=0;n<trials;n++) {
           const rng=mulberry32(((cfg.seed||1234567)+n*1000003)>>>0);
-          const skills=cfg.skills.map(s=>({...s}));
+          const skills=skillData;
           const ready=skills.map(()=>0);
           const cooldownReduction=skills.map(()=>0);
           const cooldownStart=skills.map(()=>0);
@@ -50,10 +72,12 @@ function clamp(x,a,b) {
           }
           function shortenOneRandomCooldown(isRanged) {
             const perCritReduction=isRanged?0.01:0.03;
-            const candidates=[];
-            for(let j=0;j<ready.length;j++) if(ready[j]>t+1e-12 && (Number(skills[j].ct)||0)>0) candidates.push(j);
-            if(candidates.length) {
-              const j=candidates[Math.floor(rng()*candidates.length)];
+            let candidateCount=0;
+            for(let j=0;j<ready.length;j++) if(ready[j]>t+1e-12 && skills[j].ct>0) candidateCount++;
+            if(candidateCount) {
+              let pick=Math.floor(rng()*candidateCount),j=-1;
+              for(let k=0;k<ready.length;k++) if(ready[k]>t+1e-12 && skills[k].ct>0 && pick--===0){j=k;break;}
+
               const baseCt=Math.max(0,Number(skills[j].ct)||0);
               cooldownReduction[j]=Math.min(1,cooldownReduction[j]+perCritReduction);
               const promo=currentPromo();
@@ -106,13 +130,11 @@ function clamp(x,a,b) {
                     }
                     function policyPick() {
                       if(typeof cfg.policy==='function') return cfg.policy({t,poisonRemaining:Math.max(0,poisonUntil-t),resist,ready:ready.map(x=>x<=t+1e-9),skills});
-                      if(cfg.policy && cfg.policy.rules) {
-                        const p={t,poisonRemaining:Math.max(0,poisonUntil-t),resist,ready:ready.map(x=>x<=t+1e-9),skills};
-                        for(const r of cfg.policy.rules) {
-                          if(r.type==='poison_le' && p.poisonRemaining<=r.value) return r.action;
-                          if(r.type==='resist_ge' && p.resist>=r.value) return r.action;
-                        }
-                        return cfg.policy.defaultAction ?? 0;
+                      if(compiledPolicy) {
+                        const remaining=poisonUntil-t;
+                        if(remaining<=compiledPolicy.poisonThreshold) return compiledPolicy.urgent;
+                        if(resist>=compiledPolicy.resistThreshold) return compiledPolicy.highResist;
+                        return compiledPolicy.defaultAction;
                       }
                       return null;
                     }
@@ -124,27 +146,16 @@ function clamp(x,a,b) {
                         const preferred=action-1;
                         if(preferred>=0 && preferred<skills.length && ready[preferred]<=t+1e-9)return preferred;
 
-                        const order=(cfg.rotation||skills.map((_,i)=>i+1)).map(x=>x-1).filter(i=>i>=0&&i<skills.length);
+                        const order=compiledRotation.length?compiledRotation:skills.map((_,i)=>i);
                         for(const i of order)if(ready[i]<=t+1e-9)return i;
                         return -1;
                       }
-                      function rotationChoose() {
-                        const rot=(cfg.rotation||[]).filter(n=>Number.isInteger(n)&&n>=1&&n<=skills.length).map(n=>n-1);
-                        if(!rot.length)return -1;
-
-                        if(!rotationChoose.cursor)rotationChoose.cursor=0;
-                        for(let k=0;k<rot.length;k++) {
-                          const idx=rot[(rotationChoose.cursor+k)%rot.length];if(ready[idx]<=t+1e-9) {
-                            rotationChoose.cursor=(rotationChoose.cursor+k+1)%rot.length;return idx;}}
-                            return -1;
-                          }
-                          let rotCursor=0;
+                      let rotCursor=0;
                           function chooseFixed() {
-                            const rot=(cfg.rotation||[]).filter(n=>Number.isInteger(n)&&n>=1&&n<=skills.length).map(n=>n-1);
-                            if(!rot.length)return -1;
-                            for(let k=0;k<rot.length;k++) {
-                              const idx=rot[(rotCursor+k)%rot.length];if(ready[idx]<=t+1e-9) {
-                                rotCursor=(rotCursor+k+1)%rot.length;return idx;}}
+                            if(!compiledRotation.length)return -1;
+                            for(let k=0;k<compiledRotation.length;k++) {
+                              const idx=compiledRotation[(rotCursor+k)%compiledRotation.length];if(ready[idx]<=t+1e-9) {
+                                rotCursor=(rotCursor+k+1)%compiledRotation.length;return idx;}}
                                 return -1;
                               }
 
@@ -177,7 +188,7 @@ function clamp(x,a,b) {
                                           nextNormal+=1/normalHz;}else{t=nextNormal;}continue;}
                                           t=nextSkill;continue;
                                         }
-                                        const s=skills[idx],start=t,execution=Math.max(0,Number(s.execution)||0),ct=Math.max(0,Number(s.ct)||0);
+                                        const s=skills[idx],start=t,execution=s.execution,ct=s.ct;
 
                                         const actionDuration=Math.max(execution,1/60);
 
@@ -187,7 +198,6 @@ function clamp(x,a,b) {
                                         ready[idx]=start+(rng()*100<instant?0:(ct/(1+promo)));
                                         busyUntil=start+actionDuration;totalSkillActivations++;
                                         const isSpecial=s.type==='special',hits=isSpecial?1:Math.max(0,Math.floor(Number(s.hits)||0)),interval=isSpecial?0:Math.max(0,Number(s.interval)||0);
-                                        const partialHitSet=new Set(String(s.partialHits||'').split(',').map(x=>parseInt(x.trim(),10)).filter(Number.isFinite).map(x=>x-1));
                                         for(let h=0;h<hits;h++) {
                                           const ht=start+h*interval;if(ht>duration+1e-9||ht>busyUntil+1e-9)break;
                                           const poisons=[];
@@ -203,8 +213,8 @@ function clamp(x,a,b) {
 
                                             poisons.push({chance:asPoisonChance,special:false});
 
-                                            if(s.poisonType==='partial'&&partialHitSet.has(h)) {
-                                              poisons.push({chance:(Number(s.partialChance)||0)+(Number(equipment.ailment)||0),special:false});
+                                            if(s.poisonType==='partial'&&s.partialHitSet.has(h)) {
+                                              poisons.push({chance:s.partialChance+(Number(equipment.ailment)||0),special:false});
                                             }
                                           }
 

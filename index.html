@@ -40,17 +40,17 @@
 
 <section class="card">
 <h2>3. 装備とアドバンススキルローテーションの最適化</h2>
-<p class="note">装備枠の効果とアドバンススキルのローテーションを同時に探索します。目的関数は<strong>毒維持率最大化</strong>です。条件分岐は「毒残り時間」と「毒耐性」を用い、アドバンススキル1〜3または通常攻撃を選択します。</p>
+<p class="note">装備枠の効果とアドバンススキルの使用方法を同時に探索します。目的関数は<strong>毒維持率最大化</strong>です。同一の装備合計値は1候補に統合し、装備合計値は全列挙します。基本ローテーションは全15通りを対称に評価し、条件分岐は2880通りを全探索します。共通乱数と段階的レーシングで計算量を抑えます。</p>
 <div class="grid">
-<label>探索規模 <input id="optDepth" type="number" value="5" min="1" max="10" step="1"></label>
-<label>粗探索試行数/候補 <input id="optTrials" type="number" value="150" min="50" max="250" step="50"></label>
-<label>精密評価上位候補数 <input id="optTopK" type="number" value="10" min="3" max="20" step="1"></label>
+<label>条件分岐候補プール規模（装備は全列挙） <input id="optDepth" type="number" value="200" min="1" max="1340" step="1"></label>
+<label>粗探索試行数/候補 <input id="optTrials" type="number" value="50" min="1" max="1000" step="10"></label>
+<label>精密評価上位候補数 <input id="optTopK" type="number" value="10" min="1" max="10" step="1"></label>
 </div>
 <div class="row"><button id="optimize" class="primary">装備＋スキル使用方法を最適化</button></div>
 <pre id="optimizationResult" class="note"></pre>
 </section>
 
-<section class="card actions"><button id="export">結果をCSV保存</button><span id="status"></span></section>
+<section class="card actions"><span id="status">シミュレーション待機中</span></section>
 
 <section class="card">
 <h2>4. データテーブル</h2>
@@ -93,7 +93,7 @@
 </div>
 </section>
 
-<section class="card"><h2>5. 結果</h2><div id="metrics" class="metrics"></div><div id="equipmentResult" class="note"></div><canvas id="chart" width="900" height="320"></canvas><div id="log"></div></section>
+<section class="card"><h2>5. 結果</h2><div id="metrics" class="metrics"></div><div id="equipmentResult" class="note"></div><div id="optimizationRanking" class="note"></div><canvas id="chart" width="900" height="320"></canvas><div id="log"></div></section>
 </main>
 <script src="src/simulator.js"></script><script src="src/app.js"></script>
 </body></html>
