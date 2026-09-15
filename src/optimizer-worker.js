@@ -3,6 +3,7 @@ let shared={base:null,skills:null,policyCount:0,policyMeta:null,rotations:null,c
 const policyCache=new Map();
 const rotationCache=new Map();
 const scoreCache=new Map();
+const wasmSafe={crit:false,combo:false,hpmax:false};
 function cachedPolicyFromSpec(p){
   const k=[p.poisonThreshold,p.successStreak,p.urgent,p.highSuccess,p.defaultAction].join('|');
   let v=policyCache.get(k); if(v)return v;
