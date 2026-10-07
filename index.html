@@ -2,12 +2,12 @@
 <html lang="ja">
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>SAOFD 毒シミュレータ</title>
+<title>SAOFD Poison Simulator Optimizer v27.69 | SAOFD 毒シミュレータ</title>
 <link rel="stylesheet" href="src/style.css">
 </head>
 <body>
 
-<header><div><h1>SAOFD 毒シミュレータ</h1></div><a href="https://github.com/" target="_blank">GitHub-ready</a></header>
+<header><div><h1>SAOFD 毒シミュレータ</h1></div></header>
 <main>
 <section class="card">
 <h2>1. データテーブル</h2>
@@ -81,12 +81,14 @@
 
 <section class="card">
 <h2>4. 装備とアドバンススキルローテーションの最適化</h2>
-<p class="note">装備枠の効果とアドバンススキルの使用方法を同時に探索します。目的関数は<strong>毒維持率最大化</strong>です。同一の装備合計値は1候補に統合し、装備合計値は全列挙します。基本ローテーションは全15通りを対称に評価し、条件分岐は「毒残り時間」のみを使い、その残り時間を2～5区間に分割した区分戦略を探索します。各区間では通常攻撃と3種類のアドバンススキルから使用方法を選択します。隠し値である毒耐性Rは分岐条件に使用しません。区間数も2～5の範囲で比較し、共通乱数と段階的レーシングで計算量を抑えます。</p>
+<p class="note">装備枠の効果とアドバンススキルの使用方法を同時に探索します。目的関数は<strong>毒維持率最大化</strong>です。同一の装備合計値は1候補に統合し、装備合計値は全列挙します。基本ローテーションは全15通りを対称に評価し、条件分岐は「毒残り時間」のみを使い、その残り時間を選択した区間数に分割した区分戦略を探索します。各区間では通常攻撃と3種類のアドバンススキルを<strong>同じ条件で</strong>選択します。隠し値である毒耐性Rは分岐条件に使用しません。最適化では候補を通常攻撃だからという理由で優遇・保護せず、全方策を総当たりで評価します。</p>
 <div class="grid">
-<label>粗探索シミュレーション回数/候補 <input id="optTrials" type="number" value="100" min="20" max="1000" step="10"></label>
+<label>粗探索精度（MC試行数の基準） <input id="optTrials" type="number" value="100" min="20" max="1000" step="10"></label>
 <label>毒残り時間の区間数 <select id="policySegments"><option value="2">2区間</option><option value="3">3区間</option><option value="4" selected>4区間</option><option value="5">5区間</option></select></label>
 <label>最終精密評価候補数 <input id="optTopK" type="number" value="10" min="1" max="10" step="1"></label>
+<label>最適化モード <select id="optMode"><option value="practical" selected>超高速・精密評価（推奨）</option><option value="exhaustive">完全総当たり（非常に重い）</option></select></label>
 </div>
+<p class="note">超高速・精密評価は、全方策×15ローテーションから<strong>実際のスキル優先順位が完全同一になる重複だけを厳密に統合</strong>し、残る全戦略をSIMD段階レースへ投入します。WASMの8候補同時評価に加えて、v27.69ではv27.68のHyperParallelに加え、1シャード内の候補群を「候補行列」として1回のWASM呼び出しで処理し、policy用cfgオブジェクト生成・8候補単位のABI往復・重複Worker検証を大幅に削減します。代表装備が少ない場合は1装備の戦略集合そのものを複数Workerへ分散し、最終Monte Carloも試行範囲を複数コアへ分割します。各試行のseed・戦闘時間・計算式は変更せず、分割結果を試行数で厳密に再結合します。完全総当たりも同じ厳密重複除去を利用します。</p>
 <div class="row"><button id="optimize" class="primary">装備＋スキル使用方法を最適化</button></div>
 </section>
 
@@ -96,5 +98,6 @@
 
 <section class="card"><h2>5. 結果</h2><div id="metrics" class="metrics"></div><div id="equipmentResult" class="note"></div><pre id="optimizationResult" class="note"></pre><div id="optimizationRanking" class="note"></div><div id="probabilityChartWrap" style="display:none"></div><div id="log"></div></section>
 </main>
-<script src="src/simulator.js"></script><script src="src/simulator-reference.js"></script><script src="src/app.js"></script>
+<script src="src/simulator.js"></script>
+<script src="src/app.js"></script>
 </body></html>
