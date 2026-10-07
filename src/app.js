@@ -1,6 +1,14 @@
 let lastResult=null;
 let optimizerSkillsCache=null;
 const $=id=>document.getElementById(id);
+const __optimizerWasmModuleCache=new Map();
+async function optimizerCompileWasmModule(url){
+  if(__optimizerWasmModuleCache.has(url))return __optimizerWasmModuleCache.get(url);
+  const task=(async()=>{try{const r=await fetch(url,{cache:'force-cache'});if(!r.ok)return null;if(WebAssembly.compileStreaming&&r.clone){try{return await WebAssembly.compileStreaming(Promise.resolve(r.clone()));}catch(_e){}}return await WebAssembly.compile(await r.arrayBuffer());}catch(_e){return null;}})();
+  __optimizerWasmModuleCache.set(url,task);return task;
+}
+// GitHub Pages: hide the tiny full-simulator compilation behind normal page use.
+const __fullSimPrecompile=optimizerCompileWasmModule('wasm/full-sim8.wasm');
 
 function esc(v) {
   return String(v??'').replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;');}
@@ -309,7 +317,7 @@ async function optimizeJoint(){
   //     rank only. Several candidates per equipment survive into the final race.
   //  7) Final Top-N is collapsed by the four aggregate equipment totals.
   let optWorkerPool=[];
-  let workerPool=[];
+  let optimizerCaps=null;
   try{
     const allRaw=collectUniqueEquipment(count);
     const all=paretoPruneEquipment(allRaw);
@@ -332,6 +340,11 @@ async function optimizeJoint(){
       if(!prev || pi<prev.index || (pi===prev.index && String(rot).localeCompare(String(prev.rotation))<0))strategyMap.set(sig,cur);
     }
     const uniqueStrategyPairs=[...strategyMap.values()].sort((a,b)=>a.index-b.index||String(a.rotation).localeCompare(String(b.rotation)));
+    const strategyK=Math.max(2,Math.min(5,Math.floor(Number(base.policySegments)||4)));
+    const packStrategy=(pi,rot)=>((Number(pi)&1023)|(((Number(rot?.[0])||0)&15)<<10)|(((Number(rot?.[1])||0)&15)<<14)|(((Number(rot?.[2])||0)&15)<<18)|((strategyK&7)<<22))>>>0;
+    const strategyIdByKey=new Map();
+    const strategyCodes=new Uint32Array(uniqueStrategyPairs.length);
+    for(let sid=0;sid<uniqueStrategyPairs.length;sid++){const q=uniqueStrategyPairs[sid];q.sid=sid;strategyCodes[sid]=packStrategy(q.index,q.rotation);strategyIdByKey.set(`${q.index}|${(q.rotation||[]).join(',')}`,sid);}
 
     // Reusable optimizer workers: expensive equipment-level stages are parallelized
     // without changing the search space or random seeds. Each worker receives the
@@ -359,15 +372,21 @@ async function optimizeJoint(){
           if(d.cmd==='error'){settled=true;cleanup();reject(new Error(d.error||'optimizer worker init failed'));}
         };
         const onError=e=>{if(settled)return;settled=true;cleanup();reject(e instanceof Error?e:new Error(e?.message||'optimizer worker load failed'));};
-        slot.w.addEventListener('message',onMessage);slot.w.addEventListener('error',onError);slot.w.postMessage(msg);
+        slot.w.addEventListener('message',onMessage);slot.w.addEventListener('error',onError);try{slot.w.postMessage(msg);}catch(e){if(msg.fullSimModule||msg.batchWasmModule){const fallback={...msg};delete fallback.fullSimModule;delete fallback.batchWasmModule;slot.w.postMessage(fallback);}else throw e;}
       });
       try{
         const mobile=/Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent||'');
-        const common={cmd:'init',base,skills,rotations,mobile};
-        // v27.69: differential-gate the shared WASM/model exactly once. Every
+        // v27.71: compile immutable WASM once, then structured-clone the compiled
+        // module to all workers. Browsers that cannot clone WebAssembly.Module
+        // automatically retry without it and use the worker-local fetch path.
+        const fullSimModule=await __fullSimPrecompile;
+        const batchWasmModule=(base.specialEffect==='hpmax')?await optimizerCompileWasmModule('wasm/sim-full.wasm'):null;
+        const common={cmd:'init',base,skills,skillsFingerprint:JSON.stringify(skills||[]),rotations,mobile,strategyCodes,fullSimModule,batchWasmModule};
+        // v27.70: differential-gate the shared WASM/model exactly once. Every
         // sibling worker loads the same bytes and immutable model, so repeating
         // the same deterministic audit N times only delays startup.
         const first=await initOne(optWorkerPool[0],common);
+        optimizerCaps=first;
         if(optWorkerPool.length>1){
           const trusted={...common,trustedInit:true,trustedWasmSafe:first.wasmSafe||{},trustedFullSimCandidateSafe:!!first.fullSimCandidateSafe};
           await Promise.all(optWorkerPool.slice(1).map(slot=>initOne(slot,trusted)));
@@ -397,12 +416,12 @@ async function optimizeJoint(){
           const cleanup=()=>{slot.w.removeEventListener('message',onMessage);slot.w.removeEventListener('error',onError);};
           const onMessage=ev=>{if(failed)return;const d=ev.data||{};
             if(d.id!==job.id)return;
-            if(d.cmd==='error'){cleanup();failed=true;reject(new Error(d.error||`Worker job ${job.id} failed`));return;}
+            if(d.cmd==='error'){cleanup();Promise.resolve().then(()=>job.fallback()).then(r=>{out[job.id]=r;done++;$('status').textContent=`最適化中… ${label} ${done}/${jobs.length}（1件JSへ退避）`;if(done>=jobs.length){resolve(out);return;}dispatch(slot);}).catch(e=>{failed=true;reject(e);});return;}
             if(d.cmd!=='result'){return;}
             cleanup();out[job.id]=d.result;done++;$('status').textContent=`最適化中… ${label} ${done}/${jobs.length}`;
             if(done>=jobs.length){resolve(out);return;} dispatch(slot);};
           const onError=err=>{cleanup();if(!failed){failed=true;reject(err instanceof Error?err:new Error(err?.message||'optimizer worker failed'));}};
-          slot.w.addEventListener('message',onMessage);slot.w.addEventListener('error',onError);slot.w.postMessage(job.msg);
+          slot.w.addEventListener('message',onMessage);slot.w.addEventListener('error',onError);slot.w.postMessage(job.msg,job.transfer||[]);
         };optWorkerPool.forEach(dispatch);
       });
     };
@@ -419,8 +438,19 @@ async function optimizeJoint(){
     const screenSeed=0x13579BDF;
     const screen=[];
     const rotationScores=new Map();
-    const screenJobs=all.map((eq,ei)=>({id:ei,msg:{cmd:'screen',id:ei,equipment:eq,duration:screenDuration,trials:screenTrials,seed:screenSeed,rotationsOverride:screenRotations},fallback:async()=>{let best=null,row=[];for(const rot of screenRotations){const r=runSimulation({...base,equipment:eq,rotation:rot,policy:null,duration:screenDuration,trials:screenTrials,seed:screenSeed});const x={rotation:rot,score:r.uptime};row.push(x);if(!best||x.score>best.score)best=x;}return {best,row};}}));
-    const screenResults=await parallelStage(screenJobs,'Pareto装備×代表3ローテーション');
+    // v27.70: the legacy no-policy batch WASM is only used when its startup
+    // differential gate passes for the active effect. If it does not, Stage 1 is
+    // canonical JS, so create enough smaller Worker batches to occupy all cores
+    // instead of leaving most of a 16/24/32-thread CPU idle behind 64-eq jobs.
+    const screenWasmSafe=!!optimizerCaps?.wasmSafe?.[base.specialEffect||'crit'];
+    const screenTargetJobs=Math.max(1,(optWorkerPool.length||1)*2);
+    const screenBatchSize=screenWasmSafe?64:Math.max(4,Math.min(64,Math.ceil(all.length/screenTargetJobs))),screenJobs=[];
+    for(let off=0,jid=0;off<all.length;off+=screenBatchSize,jid++){
+      const equipments=all.slice(off,off+screenBatchSize);
+      screenJobs.push({id:jid,msg:{cmd:'screenBatch',id:jid,equipments,duration:screenDuration,trials:screenTrials,seed:screenSeed,rotationsOverride:screenRotations},fallback:async()=>{const out=[];for(const eq of equipments){let best=null,row=[];for(const rot of screenRotations){const r=runSimulationFast({...base,equipment:eq,rotation:rot,policy:null,duration:screenDuration,trials:screenTrials,seed:screenSeed});const x={rotation:rot,score:r.uptime};row.push(x);if(!best||x.score>best.score)best=x;}out.push({best,row});}return out;}});
+    }
+    const screenBatches=await parallelStage(screenJobs,'Pareto装備×代表3ローテーション');
+    const screenResults=screenBatches.flat();
     for(let ei=0;ei<all.length;ei++){const eq=all[ei],rr=screenResults[ei];rotationScores.set(equipmentKey(eq),rr.row);screen.push({...rr.best,equipment:eq});}
 
     // ---------- Stage 2: exact Pareto frontier selection ----------
@@ -450,7 +480,7 @@ async function optimizeJoint(){
       return {top,evaluated:uniqueStrategyPairs.length,total:uniqueStrategyPairs.length};
     };
     const canonicalPolicyRaceFallback=async(item,stages,topN=16)=>{
-      let alive=uniqueStrategyPairs.map(q=>({index:q.index,rotation:q.rotation,score:-Infinity,sum:0,count:0,lastDuration:-1}));
+      let alive=uniqueStrategyPairs.map(q=>({sid:q.sid,index:q.index,rotation:q.rotation,score:-Infinity,sum:0,count:0,lastDuration:-1}));
       for(const st of stages){
         const dur=Number(st.duration)||30,target=Math.max(1,Math.floor(Number(st.totalTrials??st.trials)||1)),scored=[];
         for(let qi=0;qi<alive.length;qi++){
@@ -464,74 +494,21 @@ async function optimizeJoint(){
       }
       return {top:alive.slice(0,topN),evaluated:0,total:uniqueStrategyPairs.length};
     };
-    // v27.68: distribute a *single* equipment race over all optimizer workers.
-    // v27.67 assigned one equipment to one worker, leaving many CPU cores idle
-    // when only 3-6 representative equipments were being searched. Here every
-    // stage is sharded by policy×rotation candidates, then merged and pruned on
-    // the main thread with the same score/tie/keep rules as worker policyRace.
-    const distributedPolicyRace=async(item,stages,topN=16,label='分散方策レース')=>{
-      if(optWorkerPool.length<2)return await canonicalPolicyRaceFallback(item,stages,topN);
-      let alive=uniqueStrategyPairs.map(q=>({index:q.index,rotation:q.rotation,score:-Infinity,sum:0,count:0,lastDuration:-1}));
-      let evaluated=0;
-      for(let si=0;si<stages.length&&alive.length;si++){
-        const st=stages[si]||{},dur=Math.max(0.25,Number(st.duration)||30),target=Math.max(1,Math.floor(Number(st.totalTrials??st.trials)||1)),cumulative=st.cumulative!==false;
-        // All survivors share the same duration/count in the current staged
-        // race, so trialStart/add are common and remain identical to v27.67.
-        const same=cumulative&&alive.every(q=>q.lastDuration===dur),already=same?(alive[0]?.count||0):0,add=Math.max(0,target-already);
-        let scored;
-        if(add>0){
-          const workers=Math.max(1,optWorkerPool.length);
-          // Use at least one SIMD-friendly multiple of 8 per shard and enough
-          // shards to keep all workers occupied. More than one wave avoids a
-          // long-tail worker when candidate counts are not evenly divisible.
-          const targetShards=Math.min(alive.length,Math.max(workers,workers*2));
-          let shardSize=Math.max(8,Math.ceil(alive.length/targetShards));
-          shardSize=Math.ceil(shardSize/8)*8;
-          const jobs=[];let off=0,jid=0;
-          while(off<alive.length){
-            const part=alive.slice(off,Math.min(alive.length,off+shardSize));
-            jobs.push({id:jid,msg:{cmd:'policyPairs',id:jid,equipment:item.equipment,pairs:part.map(q=>({index:q.index,rotation:q.rotation})),duration:dur,trials:add,trialStart:already,seed:policySeed},fallback:async()=>{
-              const scores=[];for(const q of part){const r=runSimulationFast({...base,equipment:item.equipment,rotation:q.rotation,policy:policyFromSpecCached(policies[q.index]),duration:dur,trials:add,trialStart:already,seed:policySeed});scores.push(r.uptime);}return {scores};
-            }});off+=part.length;jid++;
-          }
-          const rr=await parallelStage(jobs,`${label} ${si+1}/${stages.length}`);
-          scored=[];let pos=0;
-          for(const r of rr){
-            const scores=r?.scores||[];
-            for(let j=0;j<scores.length;j++,pos++){
-              const q=alive[pos],sum=(same?q.sum:0)+Number(scores[j])*add,count=(same?q.count:0)+add;
-              scored.push({...q,sum,count,lastDuration:dur,score:count?sum/count:q.score});
-            }
-          }
-          evaluated+=alive.length;
-          if(pos!==alive.length)throw new Error('分散方策レースの候補数が一致しません。');
-        }else{
-          scored=alive.map(q=>({...q,lastDuration:dur}));
-        }
-        scored.sort((a,b)=>b.score-a.score || a.index-b.index || String(a.rotation||'').localeCompare(String(b.rotation||'')));
-        let keep=st.keep;if(Number(keep)>0&&Number(keep)<1)keep=Math.ceil(scored.length*Number(keep));else keep=Math.floor(Number(keep)||topN);
-        keep=Math.max(Math.min(Math.max(16,topN),scored.length),Math.min(scored.length,keep));
-        alive=scored.slice(0,keep);
-        await yieldUI();
-      }
-      return {top:alive.slice(0,Math.max(1,Math.min(64,topN))).map(({sum,count,lastDuration,...z})=>z),evaluated,total:uniqueStrategyPairs.length};
-    };
-
     // Multi-equipment variant: run all representative races concurrently while
     // sharding each race enough to occupy otherwise idle cores. This avoids the
     // v27.67 under-utilization without serializing representatives.
     const distributedPolicyRaces=async(items,stages,topN=16,label='分散方策レース')=>{
       if(!items.length)return [];
       if(optWorkerPool.length<2)return await Promise.all(items.map(x=>canonicalPolicyRaceFallback(x,stages,topN)));
-      // Sharding is a large win for only one or two representative equipments,
-      // but with 3+ equipment jobs the extra Worker messages / WASM setup can cost
-      // more than the idle cores save.  Benchmarks therefore use the lower-overhead
-      // one-equipment-per-worker scheduler from three representatives upward.
-      if(items.length>=3 || items.length>=optWorkerPool.length){
-        const jobs=items.map((item,ei)=>({id:ei,msg:{cmd:'policyRace',id:ei,equipment:item.equipment,seed:policySeed,pairs:uniqueStrategyPairs,stages,topN},fallback:async()=>canonicalPolicyRaceFallback(item,stages,topN)}));
+      // v27.71: the native policy-code matrix now has very low per-shard setup
+      // cost, so the old v27.68 "3+ equipments => no sharding" heuristic became
+      // counterproductive.  Whenever there are idle workers, shard the strategy
+      // axis as well; if equipment jobs already fill the pool, keep one job each.
+      if(items.length>=optWorkerPool.length){
+        const jobs=items.map((item,ei)=>({id:ei,msg:{cmd:'policyRace',id:ei,equipment:item.equipment,seed:policySeed,stages,topN},fallback:async()=>canonicalPolicyRaceFallback(item,stages,topN)}));
         return await parallelStage(jobs,label);
       }
-      const states=items.map(()=>uniqueStrategyPairs.map(q=>({index:q.index,rotation:q.rotation,score:-Infinity,sum:0,count:0,lastDuration:-1})));
+      const states=items.map(()=>uniqueStrategyPairs.map(q=>({sid:q.sid,score:-Infinity,sum:0,count:0,lastDuration:-1})));
       const evalCounts=new Uint32Array(items.length);
       for(let si=0;si<stages.length;si++){
         const st=stages[si]||{},dur=Math.max(0.25,Number(st.duration)||30),target=Math.max(1,Math.floor(Number(st.totalTrials??st.trials)||1)),cumulative=st.cumulative!==false;
@@ -545,32 +522,32 @@ async function optimizeJoint(){
           const shardCount=Math.min(alive.length,baseShards+(ri<(totalShardBudget%items.length)?1:0));
           let shardSize=Math.max(8,Math.ceil(alive.length/shardCount));shardSize=Math.ceil(shardSize/8)*8;
           for(let off=0;off<alive.length;off+=shardSize){
-            const part=alive.slice(off,Math.min(alive.length,off+shardSize));const id=jid++;
-            jobs.push({id,msg:{cmd:'policyPairs',id,equipment:items[ri].equipment,pairs:part.map(q=>({index:q.index,rotation:q.rotation})),duration:dur,trials:add,trialStart:already,seed:policySeed},fallback:async()=>{const scores=[];for(const q of part){const r=runSimulationFast({...base,equipment:items[ri].equipment,rotation:q.rotation,policy:policyFromSpecCached(policies[q.index]),duration:dur,trials:add,trialStart:already,seed:policySeed});scores.push(r.uptime);}return {scores};}});
+            const part=alive.slice(off,Math.min(alive.length,off+shardSize)),pairIds=Uint32Array.from(part,q=>q.sid);const id=jid++;
+            jobs.push({id,msg:{cmd:'policyPairs',id,equipment:items[ri].equipment,pairIds,duration:dur,trials:add,trialStart:already,seed:policySeed},transfer:[pairIds.buffer],fallback:async()=>{const scores=[];for(const q of part){const r=runSimulationFast({...base,equipment:items[ri].equipment,rotation:q.rotation,policy:policyFromSpecCached(policies[q.index]),duration:dur,trials:add,trialStart:already,seed:policySeed});scores.push(r.uptime);}return {scores};}});
             meta[id]={ri,off,len:part.length,same,already,add,dur};
           }
         }
         const rr=jobs.length?await parallelStage(jobs,`${label} ${si+1}/${stages.length}`):[];
-        const stageScores=states.map(a=>new Array(a.length));
+        const stageScores=states.map(a=>{const v=new Float64Array(a.length);v.fill(NaN);return v;});
         for(let id=0;id<rr.length;id++){
           const m=meta[id],scores=rr[id]?.scores||[];if(!m||scores.length!==m.len)throw new Error('分散方策レースのシャード結果が一致しません。');
-          for(let j=0;j<scores.length;j++)stageScores[m.ri][m.off+j]=Number(scores[j]);evalCounts[m.ri]++;
+          for(let j=0;j<scores.length;j++)stageScores[m.ri][m.off+j]=Number(scores[j]);evalCounts[m.ri]+=scores.length;
         }
         for(let ri=0;ri<items.length;ri++){
           const alive=states[ri];if(!alive.length)continue;
-          const same=cumulative&&alive.every(q=>q.lastDuration===dur),already=same?(alive[0]?.count||0):0,add=Math.max(0,target-already),scored=new Array(alive.length);
+          const same=cumulative&&alive.every(q=>q.lastDuration===dur),already=same?(alive[0]?.count||0):0,add=Math.max(0,target-already);
           for(let j=0;j<alive.length;j++){
-            const q=alive[j];let sum=same?q.sum:0,count=same?q.count:0;
-            if(add>0){const sc=stageScores[ri][j];if(!Number.isFinite(sc))throw new Error('分散方策レースのスコアが不正です。');sum+=sc*add;count+=add;}
-            scored[j]={...q,sum,count,lastDuration:dur,score:count?sum/count:q.score};
+            const q=alive[j];if(!same){q.sum=0;q.count=0;}
+            if(add>0){const sc=stageScores[ri][j];if(!Number.isFinite(sc))throw new Error('分散方策レースのスコアが不正です。');q.sum+=sc*add;q.count+=add;}
+            q.lastDuration=dur;q.score=q.count?q.sum/q.count:q.score;
           }
-          scored.sort((a,b)=>b.score-a.score || a.index-b.index || String(a.rotation||'').localeCompare(String(b.rotation||'')));
-          let keep=st.keep;if(Number(keep)>0&&Number(keep)<1)keep=Math.ceil(scored.length*Number(keep));else keep=Math.floor(Number(keep)||topN);
-          keep=Math.max(Math.min(Math.max(16,topN),scored.length),Math.min(scored.length,keep));states[ri]=scored.slice(0,keep);
+          alive.sort((a,b)=>b.score-a.score || a.sid-b.sid);
+          let keep=st.keep;if(Number(keep)>0&&Number(keep)<1)keep=Math.ceil(alive.length*Number(keep));else keep=Math.floor(Number(keep)||topN);
+          keep=Math.max(Math.min(Math.max(16,topN),alive.length),Math.min(alive.length,keep));alive.length=keep;
         }
         await yieldUI();
       }
-      return states.map((alive,ri)=>({top:alive.slice(0,Math.max(1,Math.min(64,topN))).map(({sum,count,lastDuration,...z})=>z),evaluated:evalCounts[ri],total:uniqueStrategyPairs.length}));
+      return states.map((alive,ri)=>({top:alive.slice(0,Math.max(1,Math.min(64,topN))).map(q=>{const m=uniqueStrategyPairs[q.sid];return {sid:q.sid,index:m.index,rotation:m.rotation,score:q.score};}),evaluated:evalCounts[ri],total:uniqueStrategyPairs.length}));
     };
 
     // Split a long Monte-Carlo suffix over otherwise idle workers. This is used
@@ -584,10 +561,15 @@ async function optimizeJoint(){
         const jobs=candidates.map((c,i)=>({id:i,msg:{cmd:'run',id:i,cfg:{...base,equipment:c.equipment,rotation:c.rotation,policy:policyFromSpecCached(c.policy),duration,trials,trialStart:start,seed:policySeed}},fallback:async()=>runSimulationFast({...base,equipment:c.equipment,rotation:c.rotation,policy:policyFromSpecCached(c.policy),duration,trials,trialStart:start,seed:policySeed})}));
         return await parallelStage(jobs,label);
       }
-      const partsPer=Math.max(1,Math.floor(workers/candidates.length));
+      // v27.71: consume every available Worker even when candidate count does not
+      // divide the pool (e.g. 16 finalists on 31 workers). Give the remainder
+      // shards to the first candidates; trialStart ranges remain disjoint/exact.
+      const oversubscribe=trials>=256?2:1;
+      const targetJobs=Math.min(trials*candidates.length,workers*oversubscribe);
+      const baseParts=Math.floor(targetJobs/candidates.length),extraParts=targetJobs%candidates.length;
       const jobs=[];const map=[];let jid=0;
       for(let ci=0;ci<candidates.length;ci++){
-        const c=candidates[ci],parts=Math.min(partsPer,trials),baseN=Math.floor(trials/parts),rem=trials%parts;let st=start;
+        const c=candidates[ci],parts=Math.max(1,Math.min(trials,baseParts+(ci<extraParts?1:0))),baseN=Math.floor(trials/parts),rem=trials%parts;let st=start;
         for(let p=0;p<parts;p++){
           const n=baseN+(p<rem?1:0);if(!n)continue;
           const id=jid++;jobs.push({id,msg:{cmd:'run',id,cfg:{...base,equipment:c.equipment,rotation:c.rotation,policy:policyFromSpecCached(c.policy),duration,trials:n,trialStart:st,seed:policySeed}},fallback:async()=>runSimulationFast({...base,equipment:c.equipment,rotation:c.rotation,policy:policyFromSpecCached(c.policy),duration,trials:n,trialStart:st,seed:policySeed})});map.push({ci,n});st+=n;
@@ -600,7 +582,6 @@ async function optimizeJoint(){
 
     const optMode=$('optMode')?.value||'practical';
     const policySeed=0x2468ACE1;
-    const allPolicyIndices=policies.map((_,i)=>i);
     let ranking=[];
 
     if(optMode==='exhaustive'){
@@ -610,7 +591,7 @@ async function optimizeJoint(){
       await yieldUI();
       const exhaustiveJobs=policyPool.map((item,ei)=>({
         id:ei,
-        msg:{cmd:'policyExhaustive',id:ei,equipment:item.equipment,duration:policyDuration,trials:policyTrials,seed:policySeed,pairs:uniqueStrategyPairs},
+        msg:{cmd:'policyExhaustive',id:ei,equipment:item.equipment,duration:policyDuration,trials:policyTrials,seed:policySeed},
         fallback:async()=>canonicalPolicyExhaustiveFallback(item,policyDuration,policyTrials,policySeed)
       }));
       const exhaustiveResults=await parallelStage(exhaustiveJobs,'完全総当たり');
@@ -619,7 +600,7 @@ async function optimizeJoint(){
         if(z)ranking.push({equipment:item.equipment,policy:policies[z.index],policyIndex:z.index,rotation:z.rotation,score:z.score});
       }
     }else{
-      // v27.68 HyperParallel exact optimizer.
+      // v27.71 Low-GC PackedKernel exact optimizer.
       // Every policy × rotation is still admitted to the first race, but only a
       // shrinking survivor set receives longer/multi-trial evaluations. Combined
       // with 8-candidate WASM SIMD this removes the dominant v27.66 cost while the
@@ -637,9 +618,9 @@ async function optimizeJoint(){
         ...(repTrials>2?[{duration:repDuration,totalTrials:2,keep:0.45,cumulative:true}]:[]),
         {duration:repDuration,totalTrials:repTrials,keep:24,cumulative:true}
       ];
-      $('status').textContent=`最適化中… Turbo探索：代表${representatives.length}装備で ${uniqueStrategyPairs.length}個の厳密ユニーク戦略を段階レース`;
+      $('status').textContent=`最適化中… PackedKernel探索：代表${representatives.length}装備で ${uniqueStrategyPairs.length}個の厳密ユニーク戦略を段階レース`;
       await yieldUI();
-      const repResults=await distributedPolicyRaces(representatives,repStages,24,'代表装備HyperParallelレース');
+      const repResults=await distributedPolicyRaces(representatives,repStages,24,'代表装備PackedKernelレース');
 
       const pairMap=new Map();
       for(const res of repResults){for(const z of (res?.top||[])){
@@ -649,21 +630,21 @@ async function optimizeJoint(){
       const beamCap=Math.min(pairMap.size,Math.max(24,Math.min(48,topK*4)));
       const beamPairs=[...pairMap.values()].sort((a,b)=>b.score-a.score).slice(0,beamCap).map(({index,rotation})=>({index,rotation}));
       if(!beamPairs.length)throw new Error('方策ビームを生成できませんでした。');
+      const beamPairIds=Uint32Array.from(beamPairs.map(q=>strategyIdByKey.get(`${q.index}|${(q.rotation||[]).join(',')}`)).filter(Number.isInteger));
+      if(beamPairIds.length!==beamPairs.length)throw new Error('方策ビームIDの構築に失敗しました。');
 
       const beamDuration=Math.min(duration,30);
       const beamTrials=Math.max(1,Math.min(2,Math.ceil(userCoarse/120)));
       $('status').textContent=`最適化中… 全Pareto装備 ${policyPool.length}個 × SIMD方策ビーム${beamPairs.length}候補（${beamTrials}試行・${beamDuration}s）`;
       await yieldUI();
-      const beamJobs=policyPool.map((item,ei)=>({
-        id:ei,
-        msg:{cmd:'policyBeam',id:ei,equipment:item.equipment,pairs:beamPairs,duration:beamDuration,trials:beamTrials,seed:policySeed,topN:3},
-        fallback:async()=>{
-          const top=[];const push=z=>{let i=top.length;while(i>0&&z.score>top[i-1].score)i--;top.splice(i,0,z);if(top.length>3)top.length=3;};
-          for(let qi=0;qi<beamPairs.length;qi++){const q=beamPairs[qi],r=runSimulationFast({...base,equipment:item.equipment,rotation:q.rotation,policy:policyFromSpecCached(policies[q.index]),duration:beamDuration,trials:beamTrials,seed:policySeed});push({...q,score:r.uptime});if((qi&63)===63)await yieldUI();}
-          return {top,evaluated:beamPairs.length,total:beamPairs.length};
-        }
-      }));
-      const beamResults=await parallelStage(beamJobs,'全装備SIMDビーム');
+      const beamWorkers=Math.max(1,optWorkerPool.length||1),beamBatchSize=Math.max(1,Math.min(16,Math.ceil(policyPool.length/Math.max(1,beamWorkers*2))));
+      const beamJobs=[];
+      for(let off=0,jid=0;off<policyPool.length;off+=beamBatchSize,jid++){
+        const items=policyPool.slice(off,off+beamBatchSize),equipments=items.map(x=>x.equipment);
+        beamJobs.push({id:jid,msg:{cmd:'policyBeamBatch',id:jid,equipments,pairIds:beamPairIds,duration:beamDuration,trials:beamTrials,seed:policySeed,topN:3},fallback:async()=>{const rows=[];for(const item of items){const top=[];const push=z=>{let i=top.length;while(i>0&&z.score>top[i-1].score)i--;top.splice(i,0,z);if(top.length>3)top.length=3;};for(let qi=0;qi<beamPairs.length;qi++){const q=beamPairs[qi],r=runSimulationFast({...base,equipment:item.equipment,rotation:q.rotation,policy:policyFromSpecCached(policies[q.index]),duration:beamDuration,trials:beamTrials,seed:policySeed});push({...q,score:r.uptime});}rows.push({top,evaluated:beamPairs.length,total:beamPairs.length});}return rows;}});
+      }
+      const beamBatchResults=await parallelStage(beamJobs,'全装備SIMDビーム');
+      const beamResults=beamBatchResults.flat();
       const beamRank=policyPool.map((item,ei)=>({item,best:beamResults[ei]?.top?.[0]||null})).filter(x=>x.best).sort((a,b)=>b.best.score-a.best.score);
 
       const refineTarget=Math.min(beamRank.length,Math.max(10,topK+4));
@@ -677,9 +658,9 @@ async function optimizeJoint(){
         {duration:refineDuration,totalTrials:2,keep:0.45,cumulative:true},
         {duration:refineDuration,totalTrials:refineTrials,keep:16,cumulative:true}
       ];
-      $('status').textContent=`最適化中… 上位${refine.length}装備を全方策×全ローテーションのTurboレースで再探索`;
+      $('status').textContent=`最適化中… 上位${refine.length}装備を全方策×全ローテーションのPackedKernelレースで再探索`;
       await yieldUI();
-      const refineResults=await distributedPolicyRaces(refine,refineStages,16,'上位装備HyperParallel再探索');
+      const refineResults=await distributedPolicyRaces(refine,refineStages,16,'上位装備PackedKernel再探索');
       const candidates=[];const candSeen=new Set();
       for(let ei=0;ei<refine.length;ei++){
         const item=refine[ei],tops=refineResults[ei]?.top||[];
@@ -695,16 +676,11 @@ async function optimizeJoint(){
       const prelim=[];const prelimSeen=new Set();
       for(const c of candidates){const k=equipmentKey(c.equipment);if(prelimSeen.has(k))continue;prelimSeen.add(k);prelim.push(c);if(prelim.length>=prelimCount)break;}
       if(prelim.length<prelimCount){const chosen=new Set(prelim.map(c=>`${equipmentKey(c.equipment)}|${c.policyIndex}|${(c.rotation||[]).join(',')}`));for(const c of candidates){const k=`${equipmentKey(c.equipment)}|${c.policyIndex}|${(c.rotation||[]).join(',')}`;if(chosen.has(k))continue;chosen.add(k);prelim.push(c);if(prelim.length>=prelimCount)break;}}
-      if(!prelim.length)throw new Error('Turbo探索の最終候補がありません。');
+      if(!prelim.length)throw new Error('PackedKernel探索の最終候補がありません。');
       const preTrials=Math.min(requestedTrials,Math.max(32,Math.min(512,Math.ceil(requestedTrials*0.04))));
       $('status').textContent=`最適化中… 最終予選 ${prelim.length}候補 × ${preTrials}/${requestedTrials}試行・${duration}s（Full-SIMD）`;
       await yieldUI();
-      const preJobs=prelim.map((c,i)=>({
-        id:i,
-        msg:{cmd:'run',id:i,cfg:{...base,equipment:c.equipment,rotation:c.rotation,policy:policyFromSpecCached(c.policy),duration,trials:preTrials,trialStart:0,seed:policySeed}},
-        fallback:async()=>runSimulationFast({...base,equipment:c.equipment,rotation:c.rotation,policy:policyFromSpecCached(c.policy),duration,trials:preTrials,trialStart:0,seed:policySeed})
-      }));
-      const preResults=await parallelStage(preJobs,'最終SIMD予選');
+      const preResults=await distributedRunRanges(prelim,0,preTrials,'最終SIMD予選');
       const preRank=prelim.map((c,i)=>({...c,preScore:preResults[i].uptime})).sort((a,b)=>b.preScore-a.preScore);
       const finalCount=Math.min(preRank.length,Math.max(topK+2,Math.min(12,topK+3)));
       const finalists=[];const finalistEq=new Set();const finalistKeys=new Set();
@@ -717,7 +693,7 @@ async function optimizeJoint(){
         const remTrials=requestedTrials-preTrials;
         $('status').textContent=`最適化中… 上位${finalists.length}候補をFull-SIMDで精密評価（残り${remTrials}試行）`;
         await yieldUI();
-        const remResults=await distributedRunRanges(finalists,preTrials,remTrials,'最終HyperParallel精密評価');
+        const remResults=await distributedRunRanges(finalists,preTrials,remTrials,'最終PackedKernel精密評価');
         ranking=finalists.map((c,i)=>({...c,score:(c.preScore*preTrials+remResults[i].uptime*remTrials)/requestedTrials}));
       }
     }
@@ -745,7 +721,7 @@ async function optimizeJoint(){
     }).join('');
     $('optimizationRanking').innerHTML=`<h3>異なる装備合計値の上位${topRanking.length}候補</h3>${rankHtml}`;
 
-  }finally{ optimizerSkillsCache=null; for(const slot of optWorkerPool||[])try{slot.w.terminate();}catch(e){} for(const slot of workerPool||[])try{slot.w.terminate();}catch(e){} $('optimize').disabled=false;$('status').textContent='';}
+  }finally{ optimizerSkillsCache=null; for(const slot of optWorkerPool||[])try{slot.w.terminate();}catch(e){} $('optimize').disabled=false;$('status').textContent='';}
 }
 
 function optimize() {

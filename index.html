@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>SAOFD Poison Simulator Optimizer v27.69 | SAOFD 毒シミュレータ</title>
+<title>SAOFD Poison Simulator Optimizer v27.71 Low-GC PackedKernel | SAOFD 毒シミュレータ</title>
 <link rel="stylesheet" href="src/style.css">
 </head>
 <body>
@@ -88,7 +88,7 @@
 <label>最終精密評価候補数 <input id="optTopK" type="number" value="10" min="1" max="10" step="1"></label>
 <label>最適化モード <select id="optMode"><option value="practical" selected>超高速・精密評価（推奨）</option><option value="exhaustive">完全総当たり（非常に重い）</option></select></label>
 </div>
-<p class="note">超高速・精密評価は、全方策×15ローテーションから<strong>実際のスキル優先順位が完全同一になる重複だけを厳密に統合</strong>し、残る全戦略をSIMD段階レースへ投入します。WASMの8候補同時評価に加えて、v27.69ではv27.68のHyperParallelに加え、1シャード内の候補群を「候補行列」として1回のWASM呼び出しで処理し、policy用cfgオブジェクト生成・8候補単位のABI往復・重複Worker検証を大幅に削減します。代表装備が少ない場合は1装備の戦略集合そのものを複数Workerへ分散し、最終Monte Carloも試行範囲を複数コアへ分割します。各試行のseed・戦闘時間・計算式は変更せず、分割結果を試行数で厳密に再結合します。完全総当たりも同じ厳密重複除去を利用します。</p>
+<p class="note">超高速・精密評価は、全方策×15ローテーションから<strong>実際のスキル優先順位が完全同一になる重複だけを厳密に統合</strong>し、残る全戦略を段階レースへ投入します。v27.71では方策×ローテーションの32bitコード共有に加え、方策レースを低GC化し、スキル定義を配列参照で直接キャッシュ、最終Monte Carloは余ったWorkerにも試行範囲を厳密分割して全コアを利用します。候補行列WASM、HyperParallel、最終Monte Carloの試行範囲分散も維持し、モバイルでも検証済みWASMを使用します。さらに通常攻撃頻度0で方策が待機を選ぶ場合にWASMが早期終了する不具合を修正しました。各試行のseed・戦闘時間・計算式は変更せず、WASMは基準JSとの差分検証に合格した場合だけ使用します。</p>
 <div class="row"><button id="optimize" class="primary">装備＋スキル使用方法を最適化</button></div>
 </section>
 

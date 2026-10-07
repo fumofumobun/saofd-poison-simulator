@@ -1,7 +1,8 @@
-let wasmBatchInstance=null;
+let wasmBatchInstance=null,wasmBatchModule=null;
+function setWasmBatchModule(m){if(typeof WebAssembly!=='undefined'&&m instanceof WebAssembly.Module){wasmBatchModule=m;wasmBatchInstance=null;return true;}return false;}
 async function initWasmBatch(){
   if(wasmBatchInstance)return true;
-  try{const r=await fetch((typeof document==='undefined'?'../wasm/':'./wasm/')+'sim-full.wasm',{cache:'force-cache'});if(!r.ok)throw new Error('sim-full.wasm fetch failed');const b=await r.arrayBuffer();const m=await WebAssembly.instantiate(b,{});wasmBatchInstance=m.instance;return true;}catch(e){wasmBatchInstance=null;return false;}
+  try{if(wasmBatchModule){wasmBatchInstance=await WebAssembly.instantiate(wasmBatchModule,{});return true;}const r=await fetch((typeof document==='undefined'?'../wasm/':'./wasm/')+'sim-full.wasm',{cache:'force-cache'});if(!r.ok)throw new Error('sim-full.wasm fetch failed');let m=null;if(WebAssembly.instantiateStreaming&&r.clone){try{m=await WebAssembly.instantiateStreaming(Promise.resolve(r.clone()),{});}catch(_e){}}if(!m)m=await WebAssembly.instantiate(await r.arrayBuffer(),{});wasmBatchInstance=m.instance;return true;}catch(e){wasmBatchInstance=null;return false;}
 }
 function wasmBatchScores(cfgs){
   if(!wasmBatchInstance||!cfgs.length)return null;
