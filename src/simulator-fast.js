@@ -1,4 +1,4 @@
-// v27.71 Worker-only canonical fast simulator.
+// v27.72 Worker-only canonical fast simulator: lower allocation hot path.
 function clamp(x,a,b) {
   return Math.max(a,Math.min(b,x));}
   function chanceFromResist(basePct,resist,mode) {
@@ -17,6 +17,7 @@ function clamp(x,a,b) {
 
       const __skillDataCache = new Map();
       const __skillDataIdentityCache = typeof WeakMap==='function' ? new WeakMap() : null;
+      const __rotationIdentityCache = typeof WeakMap==='function' ? new WeakMap() : null;
       function __compileSkillData(skills) {
         if(__skillDataIdentityCache && skills && (typeof skills==='object'||typeof skills==='function')) {
           const direct=__skillDataIdentityCache.get(skills);
@@ -34,7 +35,7 @@ function clamp(x,a,b) {
           }
           return {
             type:s.type,ct:Math.max(0,Number(s.ct)||0),execution:Math.max(0,Number(s.execution)||0),
-            hits,interval:Math.max(0,Number(s.interval)||0),
+            hits,interval:Math.max(0,Number(s.interval)||0),actionDuration:Math.max(Math.max(0,Number(s.execution)||0),1/60),
             rangedRate:Number(s.rangedRate)||0,poisonType:s.poisonType,partialChance:Number(s.partialChance)||0,partialFlags
           };
         });
@@ -87,7 +88,16 @@ function runSimulationFastCore(cfg) {
           highSuccess: Number(cfg.policy.rules[1]?.action ?? 0),
           defaultAction: Number(cfg.policy.defaultAction ?? 0)
         } : null);
-        const compiledRotation = (cfg.rotation||[]).filter(n=>Number.isInteger(n)&&n>=1&&n<=skillData.length).map(n=>n-1);
+        let compiledRotation=null;
+        const rawRotation=cfg.rotation||[];
+        if(__rotationIdentityCache && rawRotation && typeof rawRotation==='object'){
+          const hit=__rotationIdentityCache.get(rawRotation);
+          if(hit && hit.skillCount===skillData.length)compiledRotation=hit.value;
+        }
+        if(!compiledRotation){
+          compiledRotation=rawRotation.filter(n=>Number.isInteger(n)&&n>=1&&n<=skillData.length).map(n=>n-1);
+          if(__rotationIdentityCache && rawRotation && typeof rawRotation==='object')__rotationIdentityCache.set(rawRotation,{skillCount:skillData.length,value:compiledRotation});
+        }
         const defaultOrder=new Int8Array(skillData.length);
         for(let di=0;di<skillData.length;di++)defaultOrder[di]=di;
         let uptimeSum=0,maxRes=0;
@@ -103,9 +113,14 @@ function runSimulationFastCore(cfg) {
         const ailmentDuration=Number(cfg.ailmentDuration)||0;
         const equipmentCtPromo=Number(equipment.ctPromo)||0;
         const equipmentInstant=Number(equipment.instant)||0;
+        // Reuse one RNG function and reset only its 32-bit state per trial.
+        // This is bit-identical to constructing mulberry32(seed) each time but
+        // removes thousands of short-lived closures in JS fallback stages.
+        let rngState=0;
+        const rng=()=>{let t=rngState=(rngState+0x6D2B79F5)>>>0;t=Math.imul(t^t>>>15,t|1);t^=t+Math.imul(t^t>>>7,t|61);return ((t^t>>>14)>>>0)/4294967296;};
 
         for(let n=trialStart;n<trialStart+trials;n++) {
-          const rng=mulberry32(((cfg.seed||1234567)+n*1000003)>>>0);
+          rngState=(((cfg.seed||1234567)+n*1000003)>>>0);
           const skills=skillData;
           const skillCount=skills.length;
           // Arrays are reused across trials; reset only the active prefix.
@@ -256,7 +271,7 @@ function runSimulationFastCore(cfg) {
                                         }
                                         const s=skills[idx],start=t,execution=s.execution,ct=s.ct;
 
-                                        const actionDuration=Math.max(execution,1/60);
+                                        const actionDuration=s.actionDuration;
 
                                         const instant=clamp((Number(s.instant)||0)+(equipmentInstant),0,100);
                                         cooldownReduction[idx]=0;cooldownStart[idx]=start;
@@ -272,7 +287,7 @@ function runSimulationFastCore(cfg) {
                                           while(nextNormal<=ht+1e-9&&nextNormal<busyUntil+1e-9&&nextNormal<=duration+1e-9) {
                                             t=nextNormal;processHit(normalRangedRate,0,0,false,0,false);nextNormal+=1/normalHz;
                                           }
-                                          t=ht;processHit(Number(s.rangedRate)||0,poisonCount,p1,s1,p2,s2);
+                                          t=ht;processHit(hd.rangedRate,poisonCount,p1,s1,p2,s2);
                                           t=busyUntil;
                                           if(execution<=1e-9)t=busyUntil;
                                         }

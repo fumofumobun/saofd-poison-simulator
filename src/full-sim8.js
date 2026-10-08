@@ -1,15 +1,16 @@
 /* v27.43 full one-call simulator bridge. The WASM kernel owns the event scheduler
  * and all deterministic state transitions for eight independent MC trials. */
 (function(g){'use strict';
-let inst=null,promise=null,providedModule=null;
+let inst=null,promise=null,providedModule=null,sharedScratch=null;
 const P={base:0,rise:64,fall:128,ailDur:192,duration:256,critRate:320,normalHpm:384,normalRanged:448,comboRate:512,hpMax:576,eqA:640,eqP:704,ctPromo:768,instantBonus:832,ct:896,execution:920,hits:944,interval:968,skillRanged:992,skillInstant:1016,skillPoisonType:1040,partialChance:1064,partialMask:1088,policyActions:1888,policyK:2208,rotation:2400,specialMode:2416,seeds:2448,rotation2:2496,outUptime:3000,outMaxRes:3064};
 const BYTES=262144;
-function setModule(m){if(typeof WebAssembly!=='undefined'&&m instanceof WebAssembly.Module){providedModule=m;inst=null;promise=null;return true;}return false;}
+function setModule(m){if(typeof WebAssembly!=='undefined'&&m instanceof WebAssembly.Module){providedModule=m;inst=null;promise=null;sharedScratch=null;return true;}return false;}
 async function init(){if(promise)return promise;promise=(async()=>{try{if(providedModule){inst=(await WebAssembly.instantiate(providedModule,{}));return true;}const url=(typeof document==='undefined'?'../wasm/':'./wasm/')+'full-sim8.wasm';const r=await fetch(url,{cache:'force-cache'});if(!r.ok)throw Error('full-sim8 fetch');let obj=null;if(WebAssembly.instantiateStreaming&&r.clone){try{obj=await WebAssembly.instantiateStreaming(Promise.resolve(r.clone()),{});}catch(_e){}}if(!obj)obj=await WebAssembly.instantiate(await r.arrayBuffer(),{});inst=obj.instance;return true;}catch(e){inst=null;return false;}})();return promise;}
 function ensure(){const m=inst.exports.memory;if(m.buffer.byteLength<BYTES)m.grow(Math.ceil((BYTES-m.buffer.byteLength)/65536));return {f:new Float64Array(m.buffer),i:new Int32Array(m.buffer),u:new Uint32Array(m.buffer)};}
 function ensureBytes(bytes){const m=inst.exports.memory;const need=Math.max(BYTES,Math.ceil(Number(bytes)||0));if(m.buffer.byteLength<need)m.grow(Math.ceil((need-m.buffer.byteLength)/65536));return {f:new Float64Array(m.buffer),i:new Int32Array(m.buffer),u:new Uint32Array(m.buffer)};}
 function set8(f,off,a){f.set(a.subarray(0,8),off>>3);} function setN(f,off,a,n){f.set(a.subarray(0,n),off>>3);}
 function make(){return {base:new Float64Array(8),rise:new Float64Array(8),fall:new Float64Array(8),ailDur:new Float64Array(8),duration:new Float64Array(8),critRate:new Float64Array(8),normalHpm:new Float64Array(8),normalRanged:new Float64Array(8),comboRate:new Float64Array(8),hpMax:new Float64Array(8),eqA:new Float64Array(8),eqP:new Float64Array(8),ctPromo:new Float64Array(8),instantBonus:new Float64Array(8),ct:new Float64Array(3),execution:new Float64Array(3),hits:new Float64Array(3),interval:new Float64Array(3),skillRanged:new Float64Array(3),skillInstant:new Float64Array(3),skillPoisonType:new Float64Array(3),partialChance:new Float64Array(3),partialMask:new Float64Array(3*32),policyActions:new Float64Array(8*5),policyK:new Int32Array(8),rotation:new Int32Array(3),specialMode:new Int32Array(8),rotation2:new Int32Array(3),seeds:new Uint32Array(8),outUptime:new Float64Array(8),outMaxRes:new Float64Array(8)};}
+function scratch(){return sharedScratch||(sharedScratch=make());}
 function prepare(x){
  if(!inst)throw Error('full-sim8 not initialized');
  const {f,i,u}=ensure();
@@ -40,7 +41,7 @@ function runCandidateMatrix(cfgs){
  const first=cfgs[0]
  const trials=Math.max(1,Math.floor(Number(first.trials)||1)),n=cfgs.length;
  // Populate the fixed ABI region once with the shared battle/skill model.
- const x=make();fillFromCfgs(x,[first],0);prepare(x);
+ const x=scratch();fillFromCfgs(x,[first],0);prepare(x);
  const align8=v=>(v+7)&~7;let off=512*1024; // keep dense matrix workspace well above the native stack/static ABI
  const eqA=off;off=align8(off+n*8);const eqP=off;off=align8(off+n*8);const ctPromo=off;off=align8(off+n*8);const instant=off;off=align8(off+n*8);
  const actions=off;off=align8(off+n*5*8);const pks=off;off=align8(off+n*4);const seeds=off;off=align8(off+n*4);
@@ -73,7 +74,7 @@ function runPolicyCodeMatrix(baseCfg,equipment,codes,duration,trials,trialStart,
  const fn=inst.exports.simulate_policy_code_matrix;if(typeof fn!=='function')return null;
  const ca=codes instanceof Uint32Array?codes:Uint32Array.from(codes),n=ca.length,dec=decodeStrategyCode(ca[0],baseCfg.ailmentDuration);
  const first={...baseCfg,equipment,rotation:dec.rotation,policy:dec.policy,duration,trials,trialStart,seed};
- const x=make();fillFromCfgs(x,[first],0);prepare(x);
+ const x=scratch();fillFromCfgs(x,[first],0);prepare(x);
  const align8=v=>(v+7)&~7;let off=512*1024;
  const codeOff=off;off=align8(off+n*4);const outU=off;off=align8(off+n*8);const outM=off;off=align8(off+n*8);
  const {f,u}=ensureBytes(off+64);u.set(ca,codeOff>>2);
@@ -125,5 +126,5 @@ function setCandidateTrialSeeds(x,cfgs,trialIndex){
   for(let l=0;l<8;l++){const cfg=cfgs[Math.min(l,cfgs.length-1)]||cfgs[0];x.seeds[l]=(((cfg.seed||1234567)+(Math.max(0,Math.floor(cfg.trialStart||0))+trialIndex)*1000003)>>>0);}return x;
 }
 function setTrialLaneSeeds(x,cfg,start){for(let l=0;l<8;l++)x.seeds[l]=(((cfg.seed||1234567)+(start+l)*1000003)>>>0);return x;}
-g.SAOFDFullSim8WASM={setModule,init,make,prepare,runPrepared,runCandidateTrialsPrepared,runCandidateMatrix,runPolicyCodeMatrix,decodeStrategyCode,fillFromCfg,fillFromCfgs,setCandidateTrialSeeds,setTrialLaneSeeds};
+g.SAOFDFullSim8WASM={setModule,init,make,scratch,prepare,runPrepared,runCandidateTrialsPrepared,runCandidateMatrix,runPolicyCodeMatrix,decodeStrategyCode,fillFromCfg,fillFromCfgs,setCandidateTrialSeeds,setTrialLaneSeeds};
 })(typeof self!=='undefined'?self:window);

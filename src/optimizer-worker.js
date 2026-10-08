@@ -1,9 +1,10 @@
-// v27.71 GitHub Pages worker: low-GC packed races + verified native kernels only.
+// v27.72 GitHub Pages worker: persistent RPC + range-coded races + verified native kernels.
 importScripts('./wasm-sim.js','./simulator-fast.js','./full-sim8.js');
-let shared={base:null,skills:null,skillsFingerprint:'',policyCount:0,policyK:4,rotations:null,strategyCodes:null};
+let shared={base:null,skills:null,skillsFingerprint:'',policyCount:0,policyK:4,rotations:null,strategyCodes:null,allStrategyIds:null};
 const policyCache=new Map();
 const wasmSafe={crit:false,combo:false,hpmax:false};
 let fullSimCandidateSafe=false;
+let fullSimModuleLoaded=false,batchModuleLoaded=false;
 const FULLSIM_MIN_TRIALS=16;
 function pushTop(top,item,limit=16){
   let i=top.length; while(i>0){const p=top[i-1];const better=item.score>p.score || (item.score===p.score && Number(item.sid)<Number(p.sid));if(!better)break;i--;}
@@ -12,7 +13,7 @@ function pushTop(top,item,limit=16){
 function materializeTop(top){return top.map(z=>{const q=strategyMetaAt(z.sid);return {sid:z.sid,index:q.index,rotation:q.rotation,score:z.score};});}
 
 function cachedPolicyFromSpec(p){
-  const k=Array.isArray(p.segmentActions)?`K${p.segmentCount}|${p.segmentActions.join(',')}`:[p.poisonThreshold,p.successStreak,p.urgent,p.highSuccess,p.defaultAction].join('|');
+  const k=Array.isArray(p.segmentActions)?`K${p.segmentCount}|D${Number(p.ailmentDuration)||0}|${p.segmentActions.join(',')}`:[p.poisonThreshold,p.successStreak,p.urgent,p.highSuccess,p.defaultAction,Number(p.ailmentDuration)||0].join('|');
   let v=policyCache.get(k); if(v)return v;
   v=Array.isArray(p.segmentActions)
     ? {segmentActions:p.segmentActions,segmentCount:p.segmentCount,ailmentDuration:p.ailmentDuration}
@@ -35,12 +36,17 @@ function strategyMetaAt(id){
   return {sid,index:pi,rotation,K};
 }
 function strategyIds(input){
-  if(input instanceof Uint32Array)return input;
+  if(ArrayBuffer.isView(input)&&!(input instanceof DataView)&&typeof input.length==='number')return input;
   if(input&&typeof input.length==='number'){const out=[];for(let j=0;j<input.length;j++){const v=Number(input[j]);if(Number.isInteger(v)&&v>=0&&shared.strategyCodes&&v<shared.strategyCodes.length)out.push(v);}return out;}
-  return shared.strategyCodes?Array.from({length:shared.strategyCodes.length},(_,i)=>i):[];
+  return shared.allStrategyIds||[];
+}
+function strategyRange(start,count){
+  const n=shared.strategyCodes?shared.strategyCodes.length:0,s=Math.max(0,Math.floor(Number(start)||0)),c=Math.max(0,Math.floor(Number(count)||0));
+  if(s>n||s+c>n)throw new Error('strategy range out of bounds');
+  return {start:s,count:c,codes:shared.strategyCodes.subarray(s,s+c)};
 }
 function strategyCodesForIds(ids){
-  if(!shared.strategyCodes)return null;if(!ids)return shared.strategyCodes;
+  if(!shared.strategyCodes)return null;if(!ids||ids===shared.allStrategyIds)return shared.strategyCodes;
   if(ids.length){const first=Number(ids[0]);let contiguous=Number.isInteger(first)&&first>=0&&first+ids.length<=shared.strategyCodes.length;for(let j=1;contiguous&&j<ids.length;j++)if(Number(ids[j])!==first+j)contiguous=false;if(contiguous)return shared.strategyCodes.subarray(first,first+ids.length);}
   const out=new Uint32Array(ids.length);for(let j=0;j<ids.length;j++)out[j]=shared.strategyCodes[ids[j]];return out;
 }
@@ -104,7 +110,7 @@ function wasmCompatible(work,effect){
 async function scoreOneFullSim8(c){
   if(!(await SAOFDFullSim8WASM.init()))return null;
   const trials=Math.max(1,Math.floor(c.trials||1)),start=Math.max(0,Math.floor(c.trialStart||0));
-  const x=SAOFDFullSim8WASM.make();SAOFDFullSim8WASM.fillFromCfg(x,c,start);SAOFDFullSim8WASM.prepare(x);
+  const x=SAOFDFullSim8WASM.scratch?SAOFDFullSim8WASM.scratch():SAOFDFullSim8WASM.make();SAOFDFullSim8WASM.fillFromCfg(x,c,start);SAOFDFullSim8WASM.prepare(x);
   let sum=0,max=0,count=0;
   // For long final Monte-Carlo ranges the simulation body, not the ABI crossing,
   // dominates.  Eight-trial groups benchmark faster than the nested range wrapper
@@ -265,7 +271,7 @@ async function scoreMany(cfgs,_useCache=false,allowFullSim8=true){
 
 
 self.onmessage=async function(ev){const d=ev.data||{};try{
- if(d.cmd==='init'){policyCache.clear();shared.base=d.base;shared.skills=d.skills;shared.skillsFingerprint=d.skillsFingerprint||JSON.stringify(d.skills||[]);shared.rotations=d.rotations;shared.strategyCodes=d.strategyCodes?(d.strategyCodes instanceof Uint32Array?d.strategyCodes:Uint32Array.from(d.strategyCodes)):null;if(d.fullSimModule&&SAOFDFullSim8WASM.setModule)SAOFDFullSim8WASM.setModule(d.fullSimModule);if(d.batchWasmModule&&typeof setWasmBatchModule==='function')setWasmBatchModule(d.batchWasmModule);buildPolicyMeta();
+ if(d.cmd==='init'){policyCache.clear();shared.base=d.base;shared.skills=d.skills;shared.skillsFingerprint=d.skillsFingerprint||JSON.stringify(d.skills||[]);shared.rotations=d.rotations;if(d.strategyCodes){shared.strategyCodes=d.strategyCodes instanceof Uint32Array?d.strategyCodes:Uint32Array.from(d.strategyCodes);shared.allStrategyIds=shared.strategyCodes.length<65536?Uint16Array.from({length:shared.strategyCodes.length},(_,i)=>i):Uint32Array.from({length:shared.strategyCodes.length},(_,i)=>i);}if(!shared.strategyCodes)throw new Error('strategy codes missing');if(d.fullSimModule&&SAOFDFullSim8WASM.setModule&&!fullSimModuleLoaded){SAOFDFullSim8WASM.setModule(d.fullSimModule);fullSimModuleLoaded=true;}if(d.batchWasmModule&&typeof setWasmBatchModule==='function'&&!batchModuleLoaded){setWasmBatchModule(d.batchWasmModule);batchModuleLoaded=true;}buildPolicyMeta();
    // Validate only the active no-policy effect at startup. v27.65 validated all
    // three effects in every worker, tripling startup work even though one effect
    // is selected per optimization run.
@@ -333,10 +339,17 @@ self.onmessage=async function(ev){const d=ev.data||{};try{
   const limit=Math.max(1,Math.min(64,Number(d.topN)||16));self.postMessage({cmd:'result',id:d.id,result:{top:materializeTop(alive.slice(0,limit)),evaluated,total:ids.length,fullSimCandidateSafe}});return;
  }
  if(d.cmd==='policyPairs'){
-  const eq=d.equipment,base=shared.base,ids=strategyIds(d.pairIds),trials=Math.max(1,Math.floor(Number(d.trials)||1)),trialStart=Math.max(0,Math.floor(Number(d.trialStart)||0));
-  let scores=scorePolicyIdsNative(eq,ids,d.duration,trials,trialStart,d.seed);
-  if(!scores){const meta=Array.from(ids,strategyMetaAt),cfgs=meta.map(q=>({...base,equipment:eq,rotation:q.rotation,policy:policyAt(q.index),duration:d.duration,trials,trialStart,seed:d.seed}));const got=await scoreMany(cfgs,false,true);if(got.length!==cfgs.length||got.some(x=>!x||!Number.isFinite(x.uptime)))throw new Error('policyPairs結果が不正です');scores=Float64Array.from(got,x=>x.uptime);}
-  if(scores.length!==ids.length)throw new Error('policyPairs結果が不正です');self.postMessage({cmd:'result',id:d.id,result:{scores,evaluated:ids.length}},[scores.buffer]);return;
+  const eq=d.equipment,base=shared.base,trials=Math.max(1,Math.floor(Number(d.trials)||1)),trialStart=Math.max(0,Math.floor(Number(d.trialStart)||0));
+  let ids=null,codes=null,startSid=0,count=0;
+  if(Number.isFinite(Number(d.pairStart))&&Number.isFinite(Number(d.pairCount))){const r=strategyRange(d.pairStart,d.pairCount);startSid=r.start;count=r.count;codes=r.codes;}
+  else {ids=strategyIds(d.pairIds);count=ids.length;codes=strategyCodesForIds(ids);}
+  let scores=null;if(fullSimCandidateSafe&&codes&&codes.length){try{scores=SAOFDFullSim8WASM.runPolicyCodeMatrix(base,eq,codes,d.duration,trials,trialStart,d.seed);}catch(_e){fullSimCandidateSafe=false;scores=null;}}
+  if(!scores){
+    const cfgs=new Array(count);
+    for(let j=0;j<count;j++){const sid=ids?Number(ids[j]):startSid+j,q=strategyMetaAt(sid);cfgs[j]={...base,equipment:eq,rotation:q.rotation,policy:policyAt(q.index),duration:d.duration,trials,trialStart,seed:d.seed};}
+    const got=await scoreMany(cfgs,false,true);if(got.length!==cfgs.length||got.some(x=>!x||!Number.isFinite(x.uptime)))throw new Error('policyPairs結果が不正です');scores=Float64Array.from(got,x=>x.uptime);
+  }
+  if(scores.length!==count)throw new Error('policyPairs結果が不正です');self.postMessage({cmd:'result',id:d.id,result:{scores,evaluated:count}},[scores.buffer]);return;
  }
  if(d.cmd==='policyBeam'){
   const eq=d.equipment,base=shared.base,ids=strategyIds(d.pairIds),top=[];let scores=scorePolicyIdsNative(eq,ids,d.duration,d.trials,0,d.seed);
